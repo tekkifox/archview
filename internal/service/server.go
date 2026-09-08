@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -367,16 +366,16 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 }
 
 func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
-	info, err := s.requestDocker[dockerInfo](ctx, "/info")
-	if err != nil {
+	var info dockerInfo
+	if err := s.requestDocker(ctx, "/info", &info); err != nil {
 		return DockerSnapshot{}, err
 	}
-	containers, err := s.requestDocker[[]dockerContainer](ctx, "/containers/json?all=1")
-	if err != nil {
+	var containers []dockerContainer
+	if err := s.requestDocker(ctx, "/containers/json?all=1", &containers); err != nil {
 		return DockerSnapshot{}, err
 	}
-	images, err := s.requestDocker[[]dockerImage](ctx, "/images/json")
-	if err != nil {
+	var images []dockerImage
+	if err := s.requestDocker(ctx, "/images/json", &images); err != nil {
 		return DockerSnapshot{}, err
 	}
 
@@ -455,27 +454,22 @@ func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
 	}, nil
 }
 
-func (s *Server) requestDocker[T any](ctx context.Context, path string) (T, error) {
-	var zero T
+func (s *Server) requestDocker(ctx context.Context, path string, out any) error {
 	url := fmt.Sprintf("http://docker/%s%s", s.cfg.DockerAPI, path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return zero, err
+		return err
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return zero, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return zero, fmt.Errorf("docker api %s returned %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("docker api %s returned %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
 	}
-	var parsed T
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return zero, err
-	}
-	return parsed, nil
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 func mapPorts(ports []dockerPort) []PortSummary {
@@ -674,28 +668,6 @@ func readMountsAndDisks(procRoot, root string) ([]DiskSnapshot, error) {
 		}
 	}
 	return disks, nil
-}
-
-type fsStat struct {
-	total       uint64
-	free        uint64
-	used        uint64
-	usedPercent float64
-}
-
-func statFS(path string) (fsStat, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return fsStat{}, err
-	}
-	total := stat.Blocks * uint64(stat.Bsize)
-	free := stat.Bavail * uint64(stat.Bsize)
-	used := total - free
-	usedPercent := 0.0
-	if total > 0 {
-		usedPercent = float64(used) / float64(total) * 100
-	}
-	return fsStat{total: total, free: free, used: used, usedPercent: usedPercent}, nil
 }
 
 func countProcesses(procRoot string) (int, error) {
