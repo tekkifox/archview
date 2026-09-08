@@ -47,10 +47,14 @@ jobs:
 
       - name: Refresh Portainer stack
         if: env.PORTAINER_WEBHOOK_URL != ''
+        shell: bash
         run: |
+          set -euo pipefail
+
           curl_args=(--fail --show-error --silent --request POST)
-          if [ -n "$PORTAINER_API_KEY" ]; then
-            curl_args+=(--header "X-API-Key: $PORTAINER_API_KEY")
+          if [[ -n "${PORTAINER_API_KEY:-}" ]]; then
+            curl_args+=(--header "X-API-Key: ${PORTAINER_API_KEY}")
           fi
-          curl_args+=("$PORTAINER_WEBHOOK_URL")
+
+          curl_args+=("${PORTAINER_WEBHOOK_URL}")
           curl "${curl_args[@]}"
