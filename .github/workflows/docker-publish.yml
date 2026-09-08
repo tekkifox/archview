@@ -15,7 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
-      PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -51,10 +50,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl_args=(--fail --show-error --silent --request POST)
-          if [[ -n "${PORTAINER_API_KEY:-}" ]]; then
-            curl_args+=(--header "X-API-Key: ${PORTAINER_API_KEY}")
-          fi
-
-          curl_args+=("${PORTAINER_WEBHOOK_URL}")
-          curl "${curl_args[@]}"
+          curl --fail --show-error --silent \
+            --request POST \
+            --header 'Content-Type: application/json' \
+            --data '{}' \
+            "$PORTAINER_WEBHOOK_URL"

@@ -89,8 +89,6 @@ Push this repo to GitHub, then use the included workflow to build and publish im
 
 If you want the workflow to refresh a Portainer stack after publishing, add a repository secret named `PORTAINER_WEBHOOK_URL` with the Portainer stack webhook URL.
 
-If your Portainer endpoint requires authentication, also add `PORTAINER_API_KEY` so the workflow can send it as an `X-API-Key` header.
-
 The image name is:
 
 ```text
