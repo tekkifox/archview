@@ -836,7 +836,7 @@ const dashboardTemplate = `<!doctype html>
     </section>
   </main>
 </body>
-</html>`package service
+</html>`/*package service
 
 import (
 	"bytes"
@@ -1720,3 +1720,4 @@ type syscallStatfs struct {
 func statfs(path string, stat *syscallStatfs) error {
 	return fmt.Errorf("statfs unavailable on this build target for %s", path)
 }
+*/
