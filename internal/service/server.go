@@ -204,6 +204,12 @@ type dockerImage struct {
 	Architecture string   `json:"Architecture"`
 }
 
+type dockerContainerInspect struct {
+	Config struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
+}
+
 func NewServer(cfg Config) *Server {
 	dockerBase, transport := dockerTransport(cfg)
 	if dockerBase == "" {
@@ -392,8 +398,20 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 	if err := s.requestDocker(ctx, "/info", &info); err != nil {
 		return DockerSnapshot{}, err
 	}
+	projectLabel, _ := s.composeProjectLabel(ctx)
 	var containers []dockerContainer
-	if err := s.requestDocker(ctx, "/containers/json?all=1", &containers); err != nil {
+	containersPath := "/containers/json"
+	if projectLabel != "" {
+		filters := map[string][]string{
+			"label": {"com.docker.compose.project=" + projectLabel},
+		}
+		filtersJSON, err := json.Marshal(filters)
+		if err != nil {
+			return DockerSnapshot{}, err
+		}
+		containersPath += "&filters=" + url.QueryEscape(string(filtersJSON))
+	}
+	if err := s.requestDocker(ctx, containersPath, &containers); err != nil {
 		return DockerSnapshot{}, err
 	}
 	var images []dockerImage
@@ -447,6 +465,19 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 		Containers: containerSummaries,
 		Images:     imageSummaries,
 	}, nil
+}
+
+func (s *Server) composeProjectLabel(ctx context.Context) (string, error) {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return "", err
+	}
+
+	var inspect dockerContainerInspect
+	if err := s.requestDocker(ctx, "/containers/"+hostname+"/json", &inspect); err != nil {
+		return "", err
+	}
+	return inspect.Config.Labels["com.docker.compose.project"], nil
 }
 
 func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
@@ -1023,14 +1054,20 @@ type dockerPort struct {
 }
 
 type dockerImage struct {
-	ID          string   `json:"Id"`
-	RepoTags    []string  `json:"RepoTags"`
-	Size       int64     `json:"Size"`
-	Created    int64     `json:"Created"`
-	Containers int       `json:"Containers"`
-	Dangling   bool      `json:"Dangling"`
-	Os         string    `json:"Os"`
-	Architecture string  `json:"Architecture"`
+	ID           string   `json:"Id"`
+	RepoTags     []string `json:"RepoTags"`
+	Size         int64    `json:"Size"`
+	Created      int64    `json:"Created"`
+	Containers   int      `json:"Containers"`
+	Dangling     bool     `json:"Dangling"`
+	Os           string   `json:"Os"`
+	Architecture string   `json:"Architecture"`
+}
+
+type dockerContainerInspect struct {
+	Config struct {
+		Labels map[string]string `json:"Labels"`
+	} `json:"Config"`
 }
 
 func NewServer(cfg Config) *Server {

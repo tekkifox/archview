@@ -3,6 +3,7 @@ version: "3.8"
 services:
   socket-proxy:
     image: lscr.io/linuxserver/socket-proxy:latest
+    container_name: socket-proxy
     environment:
       CONTAINERS: "1"
       IMAGES: "1"
@@ -17,13 +18,19 @@ services:
     tmpfs:
       - /run
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/_ping | grep -q OK"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   archview:
     build: .
     environment:
       PORT: "8080"
       DOCKER_HOST: tcp://socket-proxy:2375
-      DOCKER_API_VERSION: "v1.41"
+      DOCKER_API_VERSION: "v1.44"
       HOST_PROC: /host/proc
       HOST_SYS: /host/sys
       HOST_ROOT: /host/root
@@ -34,5 +41,6 @@ services:
       - /sys:/host/sys:ro
       - /:/host/root:ro
     depends_on:
-      - socket-proxy
+      socket-proxy:
+        condition: service_healthy
     restart: unless-stopped
