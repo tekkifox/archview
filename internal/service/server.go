@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,6 +20,7 @@ import (
 type Config struct {
 	Addr       string
 	DockerAPI  string
+	DockerHost string
 	DockerSock string
 	HostProc   string
 	HostSys    string
@@ -26,23 +28,24 @@ type Config struct {
 }
 
 type Server struct {
-	cfg    Config
-	client *http.Client
-	dash   *template.Template
+	cfg        Config
+	client     *http.Client
+	dockerBase string
+	dash       *template.Template
 }
 
 type OverviewResponse struct {
-	Title       string          `json:"title"`
-	Description string          `json:"description"`
-	Status      string          `json:"status"`
-	Environment string          `json:"environment"`
-	Region      string          `json:"region"`
-	Cluster     string          `json:"cluster"`
-	UpdatedAt   string          `json:"updatedAt"`
+	Title       string           `json:"title"`
+	Description string           `json:"description"`
+	Status      string           `json:"status"`
+	Environment string           `json:"environment"`
+	Region      string           `json:"region"`
+	Cluster     string           `json:"cluster"`
+	UpdatedAt   string           `json:"updatedAt"`
 	Services    []ServiceSummary `json:"services"`
-	Nodes       []NodeSummary   `json:"nodes"`
-	Regions     []string        `json:"regions"`
-	Diagram     string          `json:"diagram"`
+	Nodes       []NodeSummary    `json:"nodes"`
+	Regions     []string         `json:"regions"`
+	Diagram     string           `json:"diagram"`
 	Docker      DockerSnapshot   `json:"docker"`
 	System      SystemSnapshot   `json:"system"`
 	Extra       map[string]any   `json:"extra,omitempty"`
@@ -91,12 +94,12 @@ type PortSummary struct {
 
 type ImageSummary struct {
 	ID           string   `json:"id"`
-	RepoTags     []string  `json:"repoTags"`
-	SizeBytes    int64     `json:"sizeBytes"`
-	Created      int64     `json:"created"`
-	Dangling     bool      `json:"dangling"`
+	RepoTags     []string `json:"repoTags"`
+	SizeBytes    int64    `json:"sizeBytes"`
+	Created      int64    `json:"created"`
+	Dangling     bool     `json:"dangling"`
 	Architecture string   `json:"architecture,omitempty"`
-	Os           string    `json:"os,omitempty"`
+	Os           string   `json:"os,omitempty"`
 }
 
 type SystemSnapshot struct {
@@ -106,8 +109,8 @@ type SystemSnapshot struct {
 	Architecture  string            `json:"architecture"`
 	UptimeSeconds float64           `json:"uptimeSeconds"`
 	CPUCount      int               `json:"cpuCount"`
-	LoadAverage   []float64        `json:"loadAverage"`
-	Memory        MemorySnapshot   `json:"memory"`
+	LoadAverage   []float64         `json:"loadAverage"`
+	Memory        MemorySnapshot    `json:"memory"`
 	Processes     int               `json:"processes"`
 	Disks         []DiskSnapshot    `json:"disks"`
 	Network       []NetworkSnapshot `json:"network"`
@@ -192,29 +195,48 @@ type dockerPort struct {
 
 type dockerImage struct {
 	ID           string   `json:"Id"`
-	RepoTags     []string  `json:"RepoTags"`
-	Size         int64     `json:"Size"`
-	Created      int64     `json:"Created"`
-	Containers   int       `json:"Containers"`
-	Dangling     bool      `json:"Dangling"`
-	Os           string    `json:"Os"`
-	Architecture string    `json:"Architecture"`
+	RepoTags     []string `json:"RepoTags"`
+	Size         int64    `json:"Size"`
+	Created      int64    `json:"Created"`
+	Containers   int      `json:"Containers"`
+	Dangling     bool     `json:"Dangling"`
+	Os           string   `json:"Os"`
+	Architecture string   `json:"Architecture"`
 }
 
 func NewServer(cfg Config) *Server {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", cfg.DockerSock)
-		},
+	dockerBase, transport := dockerTransport(cfg)
+	if dockerBase == "" {
+		dockerBase = "http://docker"
 	}
 
 	return &Server{
-		cfg: cfg,
+		cfg:        cfg,
+		dockerBase: dockerBase,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   10 * time.Second,
 		},
 		dash: template.Must(template.New("dashboard").Parse(dashboardTemplate)),
+	}
+}
+
+func dockerTransport(cfg Config) (string, *http.Transport) {
+	if cfg.DockerHost != "" {
+		parsed, err := url.Parse(cfg.DockerHost)
+		if err == nil {
+			baseURL := cfg.DockerHost
+			if parsed.Scheme == "tcp" || parsed.Scheme == "http" || parsed.Scheme == "https" {
+				baseURL = "http://" + parsed.Host
+			}
+			return baseURL, &http.Transport{}
+		}
+	}
+
+	return "http://docker", &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", cfg.DockerSock)
+		},
 	}
 }
 
@@ -323,7 +345,7 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 		Name:   "docker-daemon",
 		Kind:   "daemon",
 		Status: fmt.Sprintf("%d containers, %d images", docker.Daemon.Containers, docker.Daemon.Images),
-		Labels: map[string]string{"socket": s.cfg.DockerSock},
+		Labels: map[string]string{"endpoint": s.dockerBase},
 	})
 
 	nodes := []NodeSummary{{
@@ -334,9 +356,9 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 	}}
 	for _, container := range docker.Containers {
 		nodes = append(nodes, NodeSummary{
-			Name:   container.Name,
-			Kind:   "container",
-			Status: container.State,
+			Name:    container.Name,
+			Kind:    "container",
+			Status:  container.State,
 			Details: map[string]string{"image": container.Image},
 		})
 	}
@@ -455,8 +477,7 @@ func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
 }
 
 func (s *Server) requestDocker(ctx context.Context, path string, out any) error {
-	url := fmt.Sprintf("http://docker/%s%s", s.cfg.DockerAPI, path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/%s%s", strings.TrimRight(s.dockerBase, "/"), s.cfg.DockerAPI, path), nil)
 	if err != nil {
 		return err
 	}
@@ -808,7 +829,7 @@ const dashboardTemplate = `<!doctype html>
     </section>
   </main>
 </body>
-</html>`/*package service
+</html>` /*package service
 
 import (
 	"bytes"

@@ -11,12 +11,13 @@ import (
 
 func main() {
 	cfg := service.Config{
-		Addr:      envOrDefault("PORT", "8080"),
-		DockerAPI: envOrDefault("DOCKER_API_VERSION", "v1.41"),
+		Addr:       envOrDefault("PORT", "8080"),
+		DockerAPI:  envOrDefault("DOCKER_API_VERSION", "v1.41"),
+		DockerHost: envOrDefault("DOCKER_HOST", ""),
 		DockerSock: envOrDefault("DOCKER_SOCKET", "/var/run/docker.sock"),
-		HostProc:  envOrDefault("HOST_PROC", "/host/proc"),
-		HostSys:   envOrDefault("HOST_SYS", "/host/sys"),
-		HostRoot:  envOrDefault("HOST_ROOT", "/host/root"),
+		HostProc:   envOrDefault("HOST_PROC", "/host/proc"),
+		HostSys:    envOrDefault("HOST_SYS", "/host/sys"),
+		HostRoot:   envOrDefault("HOST_ROOT", "/host/root"),
 	}
 
 	server := service.NewServer(cfg)
@@ -29,7 +30,11 @@ func main() {
 	}
 
 	log.Printf("archview listening on %s", httpServer.Addr)
-	log.Printf("docker socket: %s", cfg.DockerSock)
+	if cfg.DockerHost != "" {
+		log.Printf("docker host: %s", cfg.DockerHost)
+	} else {
+		log.Printf("docker socket: %s", cfg.DockerSock)
+	}
 	log.Printf("host proc: %s", cfg.HostProc)
 
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

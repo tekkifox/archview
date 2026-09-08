@@ -1,0 +1,38 @@
+version: "3.8"
+
+services:
+  socket-proxy:
+    image: lscr.io/linuxserver/socket-proxy:latest
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      INFO: "1"
+      PING: "1"
+      POST: "0"
+      VERSION: "1"
+      LOG_LEVEL: info
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    tmpfs:
+      - /run
+    restart: unless-stopped
+
+  archview:
+    build: .
+    environment:
+      PORT: "8080"
+      DOCKER_HOST: tcp://socket-proxy:2375
+      DOCKER_API_VERSION: "v1.41"
+      HOST_PROC: /host/proc
+      HOST_SYS: /host/sys
+      HOST_ROOT: /host/root
+    ports:
+      - "8080:8080"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    depends_on:
+      - socket-proxy
+    restart: unless-stopped
