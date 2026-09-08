@@ -409,7 +409,7 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 		if err != nil {
 			return DockerSnapshot{}, err
 		}
-		containersPath += "&filters=" + url.QueryEscape(string(filtersJSON))
+		containersPath += "?filters=" + url.QueryEscape(string(filtersJSON))
 	}
 	if err := s.requestDocker(ctx, containersPath, &containers); err != nil {
 		return DockerSnapshot{}, err
