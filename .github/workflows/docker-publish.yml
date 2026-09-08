@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+      PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -47,4 +48,9 @@ jobs:
       - name: Refresh Portainer stack
         if: env.PORTAINER_WEBHOOK_URL != ''
         run: |
-          curl --fail --show-error --silent --request POST "$PORTAINER_WEBHOOK_URL"
+          curl_args=(--fail --show-error --silent --request POST)
+          if [ -n "$PORTAINER_API_KEY" ]; then
+            curl_args+=(--header "X-API-Key: $PORTAINER_API_KEY")
+          fi
+          curl_args+=("$PORTAINER_WEBHOOK_URL")
+          curl "${curl_args[@]}"
