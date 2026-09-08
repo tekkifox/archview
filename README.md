@@ -87,6 +87,8 @@ services:
 
 Push this repo to GitHub, then use the included workflow to build and publish images automatically from the default branch.
 
+If you want the workflow to refresh a Portainer stack after publishing, add a repository secret named `PORTAINER_WEBHOOK_URL` with the Portainer stack webhook URL.
+
 The image name is:
 
 ```text
