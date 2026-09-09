@@ -615,9 +615,6 @@ func buildDiagram(system SystemSnapshot, docker DockerSnapshot) string {
 			b.WriteString(")\n")
 		}
 	}
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("memory: %0.1f%% used\n", system.Memory.UsedPercent))
-	b.WriteString(fmt.Sprintf("load: %0.2f %0.2f %0.2f\n", system.LoadAverage[0], system.LoadAverage[1], system.LoadAverage[2]))
 	return b.String()
 }
 
@@ -1440,9 +1437,6 @@ func buildDiagram(system SystemSnapshot, docker DockerSnapshot) string {
 			b.WriteString(")\n")
 		}
 	}
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("memory: %0.1f%% used\n", system.Memory.UsedPercent))
-	b.WriteString(fmt.Sprintf("load: %0.2f %0.2f %0.2f\n", system.LoadAverage[0], system.LoadAverage[1], system.LoadAverage[2]))
 	return b.String()
 }
 
