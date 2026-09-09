@@ -399,6 +399,7 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 		return DockerSnapshot{}, err
 	}
 	projectLabel, _ := s.composeProjectLabel(ctx)
+	projectImages := map[string]struct{}{}
 	var containers []dockerContainer
 	containersPath := "/containers/json"
 	if projectLabel != "" {
@@ -432,10 +433,14 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 			Labels:  container.Labels,
 			Command: trimCommand(container.Command),
 		})
+		addProjectImage(projectImages, container.Image)
 	}
 
 	imageSummaries := make([]ImageSummary, 0, len(images))
 	for _, image := range images {
+		if !isProjectImage(image, projectImages) {
+			continue
+		}
 		imageSummaries = append(imageSummaries, ImageSummary{
 			ID:           image.ID,
 			RepoTags:     image.RepoTags,
@@ -465,6 +470,50 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 		Containers: containerSummaries,
 		Images:     imageSummaries,
 	}, nil
+}
+
+func addProjectImage(projectImages map[string]struct{}, image string) {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return
+	}
+	projectImages[image] = struct{}{}
+	projectImages[normalizeImageRef(image)] = struct{}{}
+}
+
+func isProjectImage(image dockerImage, projectImages map[string]struct{}) bool {
+	if len(projectImages) == 0 {
+		return false
+	}
+	for _, tag := range image.RepoTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, ok := projectImages[tag]; ok {
+			return true
+		}
+		if _, ok := projectImages[normalizeImageRef(tag)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeImageRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if index := strings.Index(ref, "@"); index >= 0 {
+		ref = ref[:index]
+	}
+	lastSlash := strings.LastIndex(ref, "/")
+	lastColon := strings.LastIndex(ref, ":")
+	if lastColon > lastSlash {
+		ref = ref[:lastColon]
+	}
+	return ref
 }
 
 func (s *Server) composeProjectLabel(ctx context.Context) (string, error) {
