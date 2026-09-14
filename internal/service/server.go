@@ -388,7 +388,8 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 	docker, err := s.collectDocker(ctx)
 	if err != nil {
-		return OverviewResponse{}, err
+		system, _ := s.collectSystem(ctx)
+		return degradedOverview(system, err), nil
 	}
 	system, err := s.collectSystem(ctx)
 	if err != nil {
@@ -455,7 +456,8 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) (OverviewResponse, error) {
 	docker, err := s.collectDockerForProject(ctx, projectLabel)
 	if err != nil {
-		return OverviewResponse{}, err
+		system, _ := s.collectSystem(ctx)
+		return degradedProjectOverview(system, projectLabel, err), nil
 	}
 	system, err := s.collectSystem(ctx)
 	if err != nil {
@@ -517,6 +519,59 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) 
 			"category": "Travelling",
 		},
 	}, nil
+}
+
+func degradedOverview(system SystemSnapshot, err error) OverviewResponse {
+	return OverviewResponse{
+		Title:       "Docker + Linux host overview",
+		Description: "Separate Go service exposing live Docker daemon, container, image, and Linux host telemetry.",
+		Status:      "degraded",
+		Environment: "docker",
+		Region:      system.OS,
+		Cluster:     system.Hostname,
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		Services: []ServiceSummary{{
+			Name:   "docker-daemon",
+			Kind:   "daemon",
+			Status: "unavailable",
+			Labels: map[string]string{"error": err.Error()},
+		}},
+		Nodes:   []NodeSummary{{Name: system.Hostname, Kind: "linux-host", Status: "degraded", Details: map[string]string{"os": system.OS, "kernel": system.Kernel}}},
+		Regions: []string{"host", system.OS},
+		Diagram: "docker daemon unavailable\n  -> host metrics only",
+		Docker:  DockerSnapshot{},
+		System:  system,
+		Extra: map[string]any{
+			"error": err.Error(),
+		},
+	}
+}
+
+func degradedProjectOverview(system SystemSnapshot, projectLabel string, err error) OverviewResponse {
+	return OverviewResponse{
+		Title:       "Travelling image mosaic",
+		Description: "PhotoPrism-backed gallery with a privacy-preserving API layer and client-side mosaic.",
+		Status:      "degraded",
+		Environment: "static",
+		Region:      projectLabel,
+		Cluster:     "image-mosaic",
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		Services: []ServiceSummary{{
+			Name:   "image-mosaic",
+			Kind:   "project",
+			Status: "unavailable",
+			Labels: map[string]string{"error": err.Error()},
+		}},
+		Nodes:   []NodeSummary{{Name: system.Hostname, Kind: "linux-host", Status: "degraded", Details: map[string]string{"os": system.OS, "kernel": system.Kernel}}},
+		Regions: []string{projectLabel, system.OS},
+		Diagram: "project containers unavailable\n  -> host metrics only",
+		Docker:  DockerSnapshot{},
+		System:  system,
+		Extra: map[string]any{
+			"project": projectLabel,
+			"error":   err.Error(),
+		},
+	}
 }
 
 func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
