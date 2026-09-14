@@ -300,6 +300,17 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	if project == "travelling" || project == "image-mosaic" {
+		resp, err := s.buildProjectOverview(r.Context(), "image-mosaic")
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	resp, err := s.buildOverview(r.Context())
 	if err != nil {
 		writeError(w, err)
@@ -393,6 +404,73 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 	}, nil
 }
 
+func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) (OverviewResponse, error) {
+	docker, err := s.collectDockerForProject(ctx, projectLabel)
+	if err != nil {
+		return OverviewResponse{}, err
+	}
+	system, err := s.collectSystem(ctx)
+	if err != nil {
+		return OverviewResponse{}, err
+	}
+
+	services := make([]ServiceSummary, 0, len(docker.Containers)+1)
+	for _, container := range docker.Containers {
+		services = append(services, ServiceSummary{
+			Name:   container.Name,
+			Kind:   "container",
+			Status: container.Status,
+			Image:  container.Image,
+			Ports:  container.Ports,
+			Labels: container.Labels,
+		})
+	}
+	services = append(services, ServiceSummary{
+		Name:   "docker-daemon",
+		Kind:   "daemon",
+		Status: fmt.Sprintf("%d containers, %d images", docker.Daemon.Containers, docker.Daemon.Images),
+		Labels: map[string]string{"project": projectLabel},
+	})
+
+	nodes := []NodeSummary{{
+		Name:    system.Hostname,
+		Kind:    "linux-host",
+		Status:  fmt.Sprintf("%0.2f load average", system.LoadAverage[0]),
+		Details: map[string]string{"kernel": system.Kernel, "os": system.OS},
+	}}
+	for _, container := range docker.Containers {
+		nodes = append(nodes, NodeSummary{
+			Name:    container.Name,
+			Kind:    "container",
+			Status:  container.State,
+			Details: map[string]string{"image": container.Image},
+		})
+	}
+
+	regions := []string{projectLabel, system.OS, docker.Daemon.Architecture}
+	diagram := buildDiagram(system, docker)
+
+	return OverviewResponse{
+		Title:       "Travelling image mosaic",
+		Description: "PhotoPrism-backed gallery with a privacy-preserving API layer and client-side mosaic.",
+		Status:      "healthy",
+		Environment: "static",
+		Region:      projectLabel,
+		Cluster:     "image-mosaic",
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		Services:    services,
+		Nodes:       nodes,
+		Regions:     regions,
+		Diagram:     diagram,
+		Docker:      docker,
+		System:      system,
+		Extra: map[string]any{
+			"project": projectLabel,
+			"category": "Travelling",
+		},
+	}, nil
+}
+
 func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 	var info dockerInfo
 	if err := s.requestDocker(ctx, "/info", &info); err != nil {
@@ -439,6 +517,84 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 	imageSummaries := make([]ImageSummary, 0, len(images))
 	for _, image := range images {
 		if !isProjectImage(image, projectImages) {
+			continue
+		}
+		imageSummaries = append(imageSummaries, ImageSummary{
+			ID:           image.ID,
+			RepoTags:     image.RepoTags,
+			SizeBytes:    image.Size,
+			Created:      image.Created,
+			Dangling:     image.Dangling,
+			Architecture: image.Architecture,
+			Os:           image.Os,
+		})
+	}
+
+	return DockerSnapshot{
+		Daemon: DockerDaemonSummary{
+			ServerVersion:     info.ServerVersion,
+			ApiVersion:        info.ApiVersion,
+			OperatingSystem:   info.OperatingSystem,
+			KernelVersion:     info.KernelVersion,
+			Architecture:      info.Architecture,
+			DockerRootDir:     info.DockerRootDir,
+			Driver:            info.Driver,
+			NCPU:              info.NCPU,
+			MemTotalBytes:     info.MemTotal,
+			Containers:        info.Containers,
+			ContainersRunning: info.ContainersRunning,
+			Images:            info.Images,
+		},
+		Containers: containerSummaries,
+		Images:     imageSummaries,
+	}, nil
+}
+
+func (s *Server) collectDockerForProject(ctx context.Context, projectLabel string) (DockerSnapshot, error) {
+	var info dockerInfo
+	if err := s.requestDocker(ctx, "/info", &info); err != nil {
+		return DockerSnapshot{}, err
+	}
+	projectImages := map[string]struct{}{}
+	containersPath := "/containers/json?all=1"
+	if projectLabel != "" {
+		filters := map[string][]string{
+			"label": {"com.docker.compose.project=" + projectLabel},
+		}
+		filtersJSON, err := json.Marshal(filters)
+		if err != nil {
+			return DockerSnapshot{}, err
+		}
+		containersPath += "&filters=" + url.QueryEscape(string(filtersJSON))
+	}
+	var containers []dockerContainer
+	if err := s.requestDocker(ctx, containersPath, &containers); err != nil {
+		return DockerSnapshot{}, err
+	}
+	var images []dockerImage
+	if err := s.requestDocker(ctx, "/images/json", &images); err != nil {
+		return DockerSnapshot{}, err
+	}
+
+	containerSummaries := make([]ContainerSummary, 0, len(containers))
+	for _, container := range containers {
+		containerSummaries = append(containerSummaries, ContainerSummary{
+			ID:      container.ID,
+			Name:    cleanDockerName(container.Names),
+			Image:   container.Image,
+			State:   container.State,
+			Status:  container.Status,
+			Created: container.Created,
+			Ports:   mapPorts(container.Ports),
+			Labels:  container.Labels,
+			Command: trimCommand(container.Command),
+		})
+		addProjectImage(projectImages, container.Image)
+	}
+
+	imageSummaries := make([]ImageSummary, 0, len(images))
+	for _, image := range images {
+		if len(projectImages) > 0 && !isProjectImage(image, projectImages) {
 			continue
 		}
 		imageSummaries = append(imageSummaries, ImageSummary{

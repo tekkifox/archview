@@ -20,6 +20,7 @@ ArchView is a separate Go service that collects Docker daemon data, container an
 - `GET /healthz`
 - `GET /api/overview`
 - `GET /api/architecture`
+- `GET /api/architecture?project=image-mosaic`
 - `GET /api/docker`
 - `GET /api/system`
 
