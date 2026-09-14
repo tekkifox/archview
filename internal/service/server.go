@@ -196,6 +196,7 @@ type dockerPort struct {
 type dockerImage struct {
 	ID           string   `json:"Id"`
 	RepoTags     []string `json:"RepoTags"`
+	Labels       map[string]string `json:"Labels"`
 	Size         int64    `json:"Size"`
 	Created      int64    `json:"Created"`
 	Containers   int      `json:"Containers"`
@@ -555,29 +556,22 @@ func (s *Server) collectDockerForProject(ctx context.Context, projectLabel strin
 	if err := s.requestDocker(ctx, "/info", &info); err != nil {
 		return DockerSnapshot{}, err
 	}
-	projectImages := map[string]struct{}{}
 	containersPath := "/containers/json?all=1"
-	if projectLabel != "" {
-		filters := map[string][]string{
-			"label": {"com.docker.compose.project=" + projectLabel},
-		}
-		filtersJSON, err := json.Marshal(filters)
-		if err != nil {
-			return DockerSnapshot{}, err
-		}
-		containersPath += "&filters=" + url.QueryEscape(string(filtersJSON))
-	}
 	var containers []dockerContainer
 	if err := s.requestDocker(ctx, containersPath, &containers); err != nil {
 		return DockerSnapshot{}, err
 	}
+	imagesPath := "/images/json?all=1"
 	var images []dockerImage
-	if err := s.requestDocker(ctx, "/images/json", &images); err != nil {
+	if err := s.requestDocker(ctx, imagesPath, &images); err != nil {
 		return DockerSnapshot{}, err
 	}
 
 	containerSummaries := make([]ContainerSummary, 0, len(containers))
 	for _, container := range containers {
+		if projectLabel != "" && !isProjectContainer(container, projectLabel) {
+			continue
+		}
 		containerSummaries = append(containerSummaries, ContainerSummary{
 			ID:      container.ID,
 			Name:    cleanDockerName(container.Names),
@@ -589,12 +583,11 @@ func (s *Server) collectDockerForProject(ctx context.Context, projectLabel strin
 			Labels:  container.Labels,
 			Command: trimCommand(container.Command),
 		})
-		addProjectImage(projectImages, container.Image)
 	}
 
 	imageSummaries := make([]ImageSummary, 0, len(images))
 	for _, image := range images {
-		if len(projectImages) > 0 && !isProjectImage(image, projectImages) {
+		if projectLabel != "" && !isProjectImageForLabel(image, projectLabel) {
 			continue
 		}
 		imageSummaries = append(imageSummaries, ImageSummary{
@@ -670,6 +663,54 @@ func normalizeImageRef(ref string) string {
 		ref = ref[:lastColon]
 	}
 	return ref
+}
+
+func isProjectContainer(container dockerContainer, projectLabel string) bool {
+	if projectLabel == "" {
+		return false
+	}
+
+	if container.Labels != nil {
+		if container.Labels["com.docker.compose.project"] == projectLabel {
+			return true
+		}
+	}
+
+	if strings.Contains(container.Image, projectLabel) {
+		return true
+	}
+
+	for _, name := range container.Names {
+		if strings.Contains(name, projectLabel) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isProjectImageForLabel(image dockerImage, projectLabel string) bool {
+	if projectLabel == "" {
+		return false
+	}
+
+	if image.Labels != nil {
+		if image.Labels["com.docker.compose.project"] == projectLabel {
+			return true
+		}
+	}
+
+	for _, tag := range image.RepoTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if strings.Contains(tag, projectLabel) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *Server) composeProjectLabel(ctx context.Context) (string, error) {
@@ -1258,6 +1299,7 @@ type dockerPort struct {
 type dockerImage struct {
 	ID           string   `json:"Id"`
 	RepoTags     []string `json:"RepoTags"`
+	Labels       map[string]string `json:"Labels"`
 	Size         int64    `json:"Size"`
 	Created      int64    `json:"Created"`
 	Containers   int      `json:"Containers"`
@@ -1480,6 +1522,9 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 
 	imageSummaries := make([]ImageSummary, 0, len(images))
 	for _, image := range images {
+		if projectLabel != "" && !isProjectImageForLabel(image, projectLabel) {
+			continue
+		}
 		imageSummaries = append(imageSummaries, ImageSummary{
 			ID:           image.ID,
 			RepoTags:     image.RepoTags,
@@ -1509,6 +1554,98 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 		Containers: containerSummaries,
 		Images:     imageSummaries,
 	}, nil
+}
+
+func addProjectImage(projectImages map[string]struct{}, image string) {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return
+	}
+	projectImages[image] = struct{}{}
+	projectImages[normalizeImageRef(image)] = struct{}{}
+}
+
+func isProjectImage(image dockerImage, projectImages map[string]struct{}) bool {
+	if len(projectImages) == 0 {
+		return false
+	}
+	for _, tag := range image.RepoTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if _, ok := projectImages[tag]; ok {
+			return true
+		}
+		if _, ok := projectImages[normalizeImageRef(tag)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeImageRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if index := strings.Index(ref, "@"); index >= 0 {
+		ref = ref[:index]
+	}
+	lastSlash := strings.LastIndex(ref, "/")
+	lastColon := strings.LastIndex(ref, ":")
+	if lastColon > lastSlash {
+		ref = ref[:lastColon]
+	}
+	return ref
+}
+
+func isProjectContainer(container dockerContainer, projectLabel string) bool {
+	if projectLabel == "" {
+		return false
+	}
+
+	if container.Labels != nil {
+		if container.Labels["com.docker.compose.project"] == projectLabel {
+			return true
+		}
+	}
+
+	if strings.Contains(container.Image, projectLabel) {
+		return true
+	}
+
+	for _, name := range container.Names {
+		if strings.Contains(name, projectLabel) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isProjectImageForLabel(image dockerImage, projectLabel string) bool {
+	if projectLabel == "" {
+		return false
+	}
+
+	if image.Labels != nil {
+		if image.Labels["com.docker.compose.project"] == projectLabel {
+			return true
+		}
+	}
+
+	for _, tag := range image.RepoTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if strings.Contains(tag, projectLabel) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
