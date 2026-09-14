@@ -1,0 +1,311 @@
+openapi: 3.1.0
+info:
+  title: ArchView API
+  version: 1.0.0
+  description: Live Docker and Linux telemetry API used by ArchView.
+servers:
+  - url: /
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /api/overview:
+    get:
+      summary: Host overview
+      responses:
+        '200':
+          description: Live host overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverviewResponse'
+  /api/architecture:
+    get:
+      summary: Architecture overview
+      parameters:
+        - in: query
+          name: project
+          schema:
+            type: string
+          description: Optional project key. `travelling` and `image-mosaic` return the project-specific overview.
+      responses:
+        '200':
+          description: Architecture payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverviewResponse'
+  /api/docker:
+    get:
+      summary: Docker daemon snapshot
+      responses:
+        '200':
+          description: Docker inventory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DockerSnapshot'
+  /api/system:
+    get:
+      summary: Linux host snapshot
+      responses:
+        '200':
+          description: Host metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemSnapshot'
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        time:
+          type: string
+          format: date-time
+      required: [status, time]
+    OverviewResponse:
+      type: object
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        environment:
+          type: string
+        region:
+          type: string
+        cluster:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceSummary'
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeSummary'
+        regions:
+          type: array
+          items:
+            type: string
+        diagram:
+          type: string
+        docker:
+          $ref: '#/components/schemas/DockerSnapshot'
+        system:
+          $ref: '#/components/schemas/SystemSnapshot'
+        extra:
+          type: object
+          additionalProperties: true
+    DockerSnapshot:
+      type: object
+      properties:
+        daemon:
+          $ref: '#/components/schemas/DockerDaemonSummary'
+        containers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContainerSummary'
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageSummary'
+    DockerDaemonSummary:
+      type: object
+      properties:
+        serverVersion:
+          type: string
+        apiVersion:
+          type: string
+        operatingSystem:
+          type: string
+        kernelVersion:
+          type: string
+        architecture:
+          type: string
+        dockerRootDir:
+          type: string
+        driver:
+          type: string
+        ncpu:
+          type: integer
+        memoryTotalBytes:
+          type: integer
+        containers:
+          type: integer
+        containersRunning:
+          type: integer
+        images:
+          type: integer
+    ContainerSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        image:
+          type: string
+        state:
+          type: string
+        status:
+          type: string
+        created:
+          type: integer
+        ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortSummary'
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        command:
+          type: string
+    PortSummary:
+      type: object
+      properties:
+        privatePort:
+          type: integer
+        publicPort:
+          type: integer
+        type:
+          type: string
+        ip:
+          type: string
+    ImageSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        repoTags:
+          type: array
+          items:
+            type: string
+        sizeBytes:
+          type: integer
+        created:
+          type: integer
+        dangling:
+          type: boolean
+        architecture:
+          type: string
+        os:
+          type: string
+    SystemSnapshot:
+      type: object
+      properties:
+        hostname:
+          type: string
+        os:
+          type: string
+        kernel:
+          type: string
+        architecture:
+          type: string
+        uptimeSeconds:
+          type: number
+        cpuCount:
+          type: integer
+        loadAverage:
+          type: array
+          items:
+            type: number
+        memory:
+          $ref: '#/components/schemas/MemorySnapshot'
+        processes:
+          type: integer
+        disks:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiskSnapshot'
+        network:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetworkSnapshot'
+    MemorySnapshot:
+      type: object
+      properties:
+        totalBytes:
+          type: integer
+        availableBytes:
+          type: integer
+        freeBytes:
+          type: integer
+        usedBytes:
+          type: integer
+        usedPercent:
+          type: number
+    DiskSnapshot:
+      type: object
+      properties:
+        mountPoint:
+          type: string
+        filesystem:
+          type: string
+        totalBytes:
+          type: integer
+        freeBytes:
+          type: integer
+        usedBytes:
+          type: integer
+        usedPercent:
+          type: number
+    NetworkSnapshot:
+      type: object
+      properties:
+        interface:
+          type: string
+        receivedBytes:
+          type: integer
+        sentBytes:
+          type: integer
+    ServiceSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+        status:
+          type: string
+        image:
+          type: string
+        node:
+          type: string
+        ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortSummary'
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+    NodeSummary:
+      type: object
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+        status:
+          type: string
+        details:
+          type: object
+          additionalProperties:
+            type: string

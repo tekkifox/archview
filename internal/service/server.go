@@ -251,6 +251,9 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.dashboard)
 	mux.HandleFunc("/healthz", s.health)
+	mux.HandleFunc("/docs", s.swaggerDocs)
+	mux.HandleFunc("/docs/", s.swaggerDocs)
+	mux.HandleFunc("/docs/openapi.yaml", s.swaggerSpec)
 	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
 	mux.HandleFunc("/api/docker", s.handleDocker)
@@ -289,6 +292,50 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"time":   time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func (s *Server) swaggerDocs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/docs" && r.URL.Path != "/docs/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ArchView API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>body{margin:0;background:#0b1020} .swagger-ui .topbar{display:none}</style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = () => {
+      SwaggerUIBundle({
+        url: '/docs/openapi.yaml',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`))
+}
+
+func (s *Server) swaggerSpec(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile("docs/openapi.yaml")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -1335,6 +1382,9 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.dashboard)
 	mux.HandleFunc("/healthz", s.health)
+	mux.HandleFunc("/docs", s.swaggerDocs)
+	mux.HandleFunc("/docs/", s.swaggerDocs)
+	mux.HandleFunc("/docs/openapi.yaml", s.swaggerSpec)
 	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
 	mux.HandleFunc("/api/docker", s.handleDocker)
@@ -1373,6 +1423,50 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"time":   time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func (s *Server) swaggerDocs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/docs" && r.URL.Path != "/docs/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ArchView API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>body{margin:0;background:#0b1020}.swagger-ui .topbar{display:none}</style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = () => {
+      SwaggerUIBundle({
+        url: '/docs/openapi.yaml',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout'
+      });
+    };
+  </script>
+</body>
+</html>`))
+}
+
+func (s *Server) swaggerSpec(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile("docs/openapi.yaml")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
