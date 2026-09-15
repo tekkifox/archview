@@ -44,25 +44,26 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 			*memPct = r
 		}
 
-		// Disks: sum used/total
-		var diskUsed int64
-		var diskTotal int64
-		for _, d := range sys.Disks {
-			diskUsed += int64(d.UsedBytes)
-			diskTotal += int64(d.TotalBytes)
-		}
+		// Disks: prefer the '/' mount point only. If not present, omit disk telemetry.
 		var diskUsedPtr *int64
 		var diskTotalPtr *int64
 		var diskPct *float64
-		if diskTotal > 0 {
-			diskUsedPtr = new(int64)
-			diskTotalPtr = new(int64)
-			*diskUsedPtr = diskUsed
-			*diskTotalPtr = diskTotal
-			p := (float64(diskUsed) / float64(diskTotal)) * 100.0
-			r := math.Round(p*10) / 10
-			diskPct = new(float64)
-			*diskPct = r
+		for _, d := range sys.Disks {
+			if d.MountPoint == "/" {
+				du := int64(d.UsedBytes)
+				dt := int64(d.TotalBytes)
+				diskUsedPtr = new(int64)
+				diskTotalPtr = new(int64)
+				*diskUsedPtr = du
+				*diskTotalPtr = dt
+				if dt > 0 {
+					p := (float64(du) / float64(dt)) * 100.0
+					r := math.Round(p*10) / 10
+					diskPct = new(float64)
+					*diskPct = r
+				}
+				break
+			}
 		}
 
 		// Network: sum received/sent
@@ -88,16 +89,23 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
             host["memoryUsedBytes"] = *memUsed
             host["memoryTotalBytes"] = *memTotal
             host["memoryPercent"] = *memPct
+            // include swap stats when available
+            host["swapTotalBytes"] = sys.Memory.SwapTotalBytes
+            host["swapFreeBytes"] = sys.Memory.SwapFreeBytes
         }
 		if diskUsedPtr != nil && diskTotalPtr != nil {
 			host["diskUsedBytes"] = *diskUsedPtr
 			host["diskTotalBytes"] = *diskTotalPtr
 			host["diskPercent"] = *diskPct
 		}
-		if rxTotal > 0 || txTotal > 0 {
-			host["networkRxBytes"] = rxTotal
-			host["networkTxBytes"] = txTotal
-		}
+        if rxTotal > 0 || txTotal > 0 {
+            host["networkRxBytes"] = rxTotal
+            host["networkTxBytes"] = txTotal
+        }
+        // process count
+        if sys.Processes > 0 {
+            host["processes"] = sys.Processes
+        }
 
 		hosts = append(hosts, host)
 	}
@@ -115,9 +123,21 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		if v, ok := h["memoryTotalBytes"].(int64); ok {
 			metrics["memoryTotalBytes"] = v
 		}
-		if v, ok := h["memoryPercent"].(float64); ok {
-			metrics["memoryPercent"] = v
-		}
+        if v, ok := h["memoryPercent"].(float64); ok {
+            metrics["memoryPercent"] = v
+        }
+        if v, ok := h["swapTotalBytes"].(int64); ok {
+            metrics["swapTotalBytes"] = v
+        }
+        if v, ok := h["swapFreeBytes"].(int64); ok {
+            metrics["swapFreeBytes"] = v
+            // compute swap percent when both values present
+            if sTot, ok2 := metrics["swapTotalBytes"].(int64); ok2 && sTot > 0 {
+                sUsed := sTot - v
+                sp := (float64(sUsed) / float64(sTot)) * 100.0
+                metrics["swapPercent"] = math.Round(sp*10) / 10
+            }
+        }
 		if v, ok := h["diskUsedBytes"].(int64); ok {
 			metrics["diskUsedBytes"] = v
 		}
@@ -136,7 +156,15 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		if la, ok := h["loadAverage"].([]float64); ok && len(la) > 0 {
 			metrics["loadAvg"] = la[0]
 		}
-		metrics["hostCount"] = len(hosts)
+        metrics["hostCount"] = len(hosts)
+        // process count aggregate (primary host)
+        if v, ok := h["processes"].(int); ok {
+            metrics["processCount"] = v
+        } else if v64, ok := h["processes"].(int64); ok {
+            metrics["processCount"] = int(v64)
+        } else if vf, ok := h["processes"].(float64); ok {
+            metrics["processCount"] = int(vf)
+        }
 		if hosts[0]["os"] != nil {
 			metrics["topOS"] = hosts[0]["os"]
 		}
@@ -158,7 +186,9 @@ func attachTelemetryToOverview(resp OverviewResponse) (map[string]any, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
-	telemetry := processOverviewTelemetry(resp)
-	m["telemetry"] = telemetry
-	return m, nil
+    telemetry := processOverviewTelemetry(resp)
+    m["telemetry"] = telemetry
+    // Remove the raw System block to force consumers to use telemetry instead
+    delete(m, "system")
+    return m, nil
 }
