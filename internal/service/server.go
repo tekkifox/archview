@@ -350,21 +350,32 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	if project == "travelling" || project == "image-mosaic" {
-		resp, err := s.buildProjectOverview(r.Context(), "image-mosaic")
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
+    resp, err := s.buildProjectOverview(r.Context(), "image-mosaic")
+    if err != nil {
+        writeError(w, err)
+        return
+    }
+    m, err := attachTelemetryToOverview(resp)
+    if err != nil {
+        // fallback to original response
+        writeJSON(w, http.StatusOK, resp)
+        return
+    }
+    writeJSON(w, http.StatusOK, m)
+    return
+  }
 
-	resp, err := s.buildOverview(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
+    resp, err := s.buildOverview(r.Context())
+    if err != nil {
+        writeError(w, err)
+        return
+    }
+    m, err := attachTelemetryToOverview(resp)
+    if err != nil {
+        writeJSON(w, http.StatusOK, resp)
+        return
+    }
+    writeJSON(w, http.StatusOK, m)
 }
 
 func (s *Server) handleDocker(w http.ResponseWriter, r *http.Request) {
