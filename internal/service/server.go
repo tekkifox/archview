@@ -339,66 +339,66 @@ func (s *Server) swaggerSpec(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
-    resp, err := s.buildOverview(r.Context())
-    if err != nil {
-        writeError(w, err)
-        return
-    }
-    writeJSON(w, http.StatusOK, resp)
+	resp, err := s.buildOverview(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
-    project := r.URL.Query().Get("project")
+	project := r.URL.Query().Get("project")
 
-    // Require a project query parameter.
-    if project == "" {
-        writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required query parameter: project"})
-        return
-    }
+	// Require a project query parameter.
+	if project == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required query parameter: project"})
+		return
+	}
 
-    // Normalize common aliases
-    switch project {
-    case "travelling", "image-mosaic":
-        project = "image-mosaic"
-    case "rossmoney", "rossmoney-me", "rossmoney_me":
-        project = "rossmoney_me"
-    }
+	// Normalize common aliases
+	switch project {
+	case "travelling", "image-mosaic":
+		project = "image-mosaic"
+	case "rossmoney", "rossmoney-me", "rossmoney_me":
+		project = "rossmoney_me"
+	}
 
-    // Determine whether this project should return a full Docker snapshot
-    // Controlled via env FULL_DOCKER_PROJECTS (comma or newline separated list of project labels)
-    fullProjectsEnv := os.Getenv("FULL_DOCKER_PROJECTS")
-    if fullProjectsEnv != "" {
-        for _, p := range strings.Split(fullProjectsEnv, ",") {
-            if strings.TrimSpace(p) == project {
-                // return full overview for this project
-                resp, err := s.buildOverview(r.Context())
-                if err != nil {
-                    writeError(w, err)
-                    return
-                }
-                m, err := attachTelemetryToOverview(resp)
-                if err != nil {
-                    writeJSON(w, http.StatusOK, resp)
-                    return
-                }
-                writeJSON(w, http.StatusOK, m)
-                return
-            }
-        }
-    }
+	// Determine whether this project should return a full Docker snapshot
+	// Controlled via env FULL_DOCKER_PROJECTS (comma or newline separated list of project labels)
+	fullProjectsEnv := os.Getenv("FULL_DOCKER_PROJECTS")
+	if fullProjectsEnv != "" {
+		for _, p := range strings.Split(fullProjectsEnv, ",") {
+			if strings.TrimSpace(p) == project {
+				// return full overview for this project
+				resp, err := s.buildOverview(r.Context())
+				if err != nil {
+					writeError(w, err)
+					return
+				}
+				m, err := attachTelemetryToOverview(resp)
+				if err != nil {
+					writeJSON(w, http.StatusOK, resp)
+					return
+				}
+				writeJSON(w, http.StatusOK, m)
+				return
+			}
+		}
+	}
 
-    // Otherwise return project-scoped overview
-    resp, err := s.buildProjectOverview(r.Context(), project)
-    if err != nil {
-        writeError(w, err)
-        return
-    }
-    m, err := attachTelemetryToOverview(resp)
-    if err != nil {
-        writeJSON(w, http.StatusOK, resp)
-        return
-    }
-    writeJSON(w, http.StatusOK, m)
+	// Otherwise return project-scoped overview
+	resp, err := s.buildProjectOverview(r.Context(), project)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	m, err := attachTelemetryToOverview(resp)
+	if err != nil {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, m)
 }
 
 // handleArchitecture is implemented later with normalized project handling.
@@ -424,8 +424,7 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
     docker, err := s.collectDockerAll(ctx)
     if err != nil {
-        system, _ := s.collectSystem(ctx)
-        return degradedOverview(system, err), nil
+        return OverviewResponse{}, err
     }
 	system, err := s.collectSystem(ctx)
 	if err != nil {
@@ -490,11 +489,10 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 }
 
 func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) (OverviewResponse, error) {
-	docker, err := s.collectDockerForProject(ctx, projectLabel)
-	if err != nil {
-		system, _ := s.collectSystem(ctx)
-		return degradedProjectOverview(system, projectLabel, err), nil
-	}
+    docker, err := s.collectDockerForProject(ctx, projectLabel)
+    if err != nil {
+        return OverviewResponse{}, err
+    }
 	system, err := s.collectSystem(ctx)
 	if err != nil {
 		return OverviewResponse{}, err
@@ -537,12 +535,12 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) 
 	diagram := buildDiagram(system, docker)
 
 	return OverviewResponse{
-		Title:       "Travelling image mosaic",
-		Description: "PhotoPrism-backed gallery with a privacy-preserving API layer and client-side mosaic.",
+		Title:       "Docker + Linux host overview",
+		Description: "Separate Go service exposing live Docker daemon, container, image, and Linux host telemetry.",
 		Status:      "healthy",
 		Environment: "static",
 		Region:      projectLabel,
-		Cluster:     "image-mosaic",
+		Cluster:     system.Hostname,
 		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 		Services:    services,
 		Nodes:       nodes,
@@ -551,8 +549,7 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) 
 		Docker:      docker,
 		System:      system,
 		Extra: map[string]any{
-			"project":  projectLabel,
-			"category": "Travelling",
+			"project": projectLabel,
 		},
 	}, nil
 }
@@ -585,8 +582,8 @@ func degradedOverview(system SystemSnapshot, err error) OverviewResponse {
 
 func degradedProjectOverview(system SystemSnapshot, projectLabel string, err error) OverviewResponse {
 	return OverviewResponse{
-		Title:       "Travelling image mosaic",
-		Description: "PhotoPrism-backed gallery with a privacy-preserving API layer and client-side mosaic.",
+		Title:       "Docker + Linux host overview",
+		Description: "Separate Go service exposing live Docker daemon, container, image, and Linux host telemetry.",
 		Status:      "degraded",
 		Environment: "static",
 		Region:      projectLabel,
@@ -691,67 +688,67 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 
 // collectDockerAll collects the full docker snapshot without applying a project filter.
 func (s *Server) collectDockerAll(ctx context.Context) (DockerSnapshot, error) {
-    var info dockerInfo
-    if err := s.requestDocker(ctx, "/info", &info); err != nil {
-        return DockerSnapshot{}, err
-    }
-    containersPath := "/containers/json?all=1"
-    var containers []dockerContainer
-    if err := s.requestDocker(ctx, containersPath, &containers); err != nil {
-        return DockerSnapshot{}, err
-    }
-    imagesPath := "/images/json?all=1"
-    var images []dockerImage
-    if err := s.requestDocker(ctx, imagesPath, &images); err != nil {
-        return DockerSnapshot{}, err
-    }
+	var info dockerInfo
+	if err := s.requestDocker(ctx, "/info", &info); err != nil {
+		return DockerSnapshot{}, err
+	}
+	containersPath := "/containers/json?all=1"
+	var containers []dockerContainer
+	if err := s.requestDocker(ctx, containersPath, &containers); err != nil {
+		return DockerSnapshot{}, err
+	}
+	imagesPath := "/images/json?all=1"
+	var images []dockerImage
+	if err := s.requestDocker(ctx, imagesPath, &images); err != nil {
+		return DockerSnapshot{}, err
+	}
 
-    containerSummaries := make([]ContainerSummary, 0, len(containers))
-    for _, container := range containers {
-        containerSummaries = append(containerSummaries, ContainerSummary{
-            ID:      container.ID,
-            Name:    cleanDockerName(container.Names),
-            Image:   container.Image,
-            State:   container.State,
-            Status:  container.Status,
-            Created: container.Created,
-            Ports:   mapPorts(container.Ports),
-            Labels:  container.Labels,
-            Command: trimCommand(container.Command),
-        })
-    }
+	containerSummaries := make([]ContainerSummary, 0, len(containers))
+	for _, container := range containers {
+		containerSummaries = append(containerSummaries, ContainerSummary{
+			ID:      container.ID,
+			Name:    cleanDockerName(container.Names),
+			Image:   container.Image,
+			State:   container.State,
+			Status:  container.Status,
+			Created: container.Created,
+			Ports:   mapPorts(container.Ports),
+			Labels:  container.Labels,
+			Command: trimCommand(container.Command),
+		})
+	}
 
-    imageSummaries := make([]ImageSummary, 0, len(images))
-    for _, image := range images {
-        imageSummaries = append(imageSummaries, ImageSummary{
-            ID:           image.ID,
-            RepoTags:     image.RepoTags,
-            SizeBytes:    image.Size,
-            Created:      image.Created,
-            Dangling:     image.Dangling,
-            Architecture: image.Architecture,
-            Os:           image.Os,
-        })
-    }
+	imageSummaries := make([]ImageSummary, 0, len(images))
+	for _, image := range images {
+		imageSummaries = append(imageSummaries, ImageSummary{
+			ID:           image.ID,
+			RepoTags:     image.RepoTags,
+			SizeBytes:    image.Size,
+			Created:      image.Created,
+			Dangling:     image.Dangling,
+			Architecture: image.Architecture,
+			Os:           image.Os,
+		})
+	}
 
-    return DockerSnapshot{
-        Daemon: DockerDaemonSummary{
-            ServerVersion:    info.ServerVersion,
-            ApiVersion:       info.ApiVersion,
-            OperatingSystem:  info.OperatingSystem,
-            KernelVersion:    info.KernelVersion,
-            Architecture:     info.Architecture,
-            DockerRootDir:    info.DockerRootDir,
-            Driver:           info.Driver,
-            NCPU:             info.NCPU,
-            MemTotalBytes:    info.MemTotal,
-            Containers:       info.Containers,
-            ContainersRunning: info.ContainersRunning,
-            Images:           info.Images,
-        },
-        Containers: containerSummaries,
-        Images:     imageSummaries,
-    }, nil
+	return DockerSnapshot{
+		Daemon: DockerDaemonSummary{
+			ServerVersion:     info.ServerVersion,
+			ApiVersion:        info.ApiVersion,
+			OperatingSystem:   info.OperatingSystem,
+			KernelVersion:     info.KernelVersion,
+			Architecture:      info.Architecture,
+			DockerRootDir:     info.DockerRootDir,
+			Driver:            info.Driver,
+			NCPU:              info.NCPU,
+			MemTotalBytes:     info.MemTotal,
+			Containers:        info.Containers,
+			ContainersRunning: info.ContainersRunning,
+			Images:            info.Images,
+		},
+		Containers: containerSummaries,
+		Images:     imageSummaries,
+	}, nil
 }
 
 func (s *Server) collectDockerForProject(ctx context.Context, projectLabel string) (DockerSnapshot, error) {
