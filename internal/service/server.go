@@ -348,9 +348,19 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
-	project := r.URL.Query().Get("project")
-	if project == "travelling" || project == "image-mosaic" {
-    resp, err := s.buildProjectOverview(r.Context(), "image-mosaic")
+    project := r.URL.Query().Get("project")
+    // Map known project aliases to internal project labels
+    switch project {
+    case "travelling", "image-mosaic":
+        resp, err := s.buildProjectOverview(r.Context(), "image-mosaic")
+        if err != nil {
+            writeError(w, err)
+            return
+        }
+        writeJSON(w, http.StatusOK, resp)
+        return
+    case "vortexservers", "vortexservers_co_uk", "tekkifox/vortexservers_co_uk":
+        resp, err := s.buildProjectOverview(r.Context(), "vortexservers_co_uk")
     if err != nil {
         writeError(w, err)
         return
