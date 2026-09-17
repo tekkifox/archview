@@ -356,29 +356,38 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // Normalize aliases
+    // Normalize common aliases
     switch project {
-    case "vortexservers", "vortexservers_co_uk", "tekkifox/vortexservers_co_uk":
-        // full overview for vortexservers
-        resp, err := s.buildOverview(r.Context())
-        if err != nil {
-            writeError(w, err)
-            return
-        }
-        m, err := attachTelemetryToOverview(resp)
-        if err != nil {
-            writeJSON(w, http.StatusOK, resp)
-            return
-        }
-        writeJSON(w, http.StatusOK, m)
-        return
     case "travelling", "image-mosaic":
         project = "image-mosaic"
     case "rossmoney", "rossmoney-me", "rossmoney_me":
         project = "rossmoney_me"
     }
 
-    // For other projects return project-scoped overview
+    // Determine whether this project should return a full Docker snapshot
+    // Controlled via env FULL_DOCKER_PROJECTS (comma or newline separated list of project labels)
+    fullProjectsEnv := os.Getenv("FULL_DOCKER_PROJECTS")
+    if fullProjectsEnv != "" {
+        for _, p := range strings.Split(fullProjectsEnv, ",") {
+            if strings.TrimSpace(p) == project {
+                // return full overview for this project
+                resp, err := s.buildOverview(r.Context())
+                if err != nil {
+                    writeError(w, err)
+                    return
+                }
+                m, err := attachTelemetryToOverview(resp)
+                if err != nil {
+                    writeJSON(w, http.StatusOK, resp)
+                    return
+                }
+                writeJSON(w, http.StatusOK, m)
+                return
+            }
+        }
+    }
+
+    // Otherwise return project-scoped overview
     resp, err := s.buildProjectOverview(r.Context(), project)
     if err != nil {
         writeError(w, err)
