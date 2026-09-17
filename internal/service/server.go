@@ -1071,10 +1071,15 @@ func isAnonymousImage(image dockerImage) bool {
 	}
 	uuidHyphen := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	hexLong := regexp.MustCompile(`^[0-9a-f]{12,}$`)
+	sha256Re := regexp.MustCompile(`(?i)sha256:[0-9a-f]{64}`)
 	allAnonymous := true
 	for _, tag := range image.RepoTags {
 		t := strings.TrimSpace(strings.ToLower(tag))
 		if t == "<none>:<none>" || t == "<none>" || t == "" {
+			continue
+		}
+		// treat digest-only tags like sha256:... as anonymous
+		if sha256Re.MatchString(t) {
 			continue
 		}
 		if uuidHyphen.MatchString(t) || hexLong.MatchString(t) {
@@ -1083,6 +1088,13 @@ func isAnonymousImage(image dockerImage) bool {
 		// if any tag looks human-readable, it's not anonymous
 		allAnonymous = false
 		break
+	}
+	// Also treat images with ID that are digests (sha256:...) as anonymous
+	if allAnonymous {
+		id := strings.TrimSpace(strings.ToLower(image.ID))
+		if id != "" && sha256Re.MatchString(id) {
+			return true
+		}
 	}
 	return allAnonymous
 }
