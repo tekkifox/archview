@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -713,9 +714,15 @@ func (s *Server) collectDockerAll(ctx context.Context) (DockerSnapshot, error) {
 			continue
 		}
 
+		name := cleanDockerName(container.Names)
+		// Exclude anonymous containers whose names are UUIDs or long hex IDs
+		if isAnonymousName(name) {
+			continue
+		}
+
 		containerSummaries = append(containerSummaries, ContainerSummary{
 			ID:      container.ID,
-			Name:    cleanDockerName(container.Names),
+			Name:    name,
 			Image:   container.Image,
 			State:   container.State,
 			Status:  container.Status,
@@ -728,6 +735,10 @@ func (s *Server) collectDockerAll(ctx context.Context) (DockerSnapshot, error) {
 
 	imageSummaries := make([]ImageSummary, 0, len(images))
 	for _, image := range images {
+		// Skip anonymous images that only expose UUID/hex-like repo tags
+		if isAnonymousImage(image) {
+			continue
+		}
 		imageSummaries = append(imageSummaries, ImageSummary{
 			ID:           image.ID,
 			RepoTags:     image.RepoTags,
@@ -780,9 +791,16 @@ func (s *Server) collectDockerForProject(ctx context.Context, projectLabel strin
 		if projectLabel != "" && !isProjectContainer(container, projectLabel) {
 			continue
 		}
+
+		name := cleanDockerName(container.Names)
+		// Exclude anonymous containers created without a friendly name
+		if isAnonymousName(name) {
+			continue
+		}
+
 		containerSummaries = append(containerSummaries, ContainerSummary{
 			ID:      container.ID,
-			Name:    cleanDockerName(container.Names),
+			Name:    name,
 			Image:   container.Image,
 			State:   container.State,
 			Status:  container.Status,
@@ -801,6 +819,11 @@ func (s *Server) collectDockerForProject(ctx context.Context, projectLabel strin
 
 	imageSummaries := make([]ImageSummary, 0, len(images))
 	for _, image := range images {
+		// Skip anonymous images that only expose UUID/hex-like repo tags
+		if isAnonymousImage(image) {
+			continue
+		}
+
 		// If a project label is supplied, prefer matching images by association with project containers
 		// (image IDs, repo tags or normalized refs). This is more reliable than looking for the label in
 		// repo tags alone and avoids missing tags that belong to the same repo but don't contain the label.
@@ -816,6 +839,7 @@ func (s *Server) collectDockerForProject(ctx context.Context, projectLabel strin
 				}
 			}
 		}
+
 		imageSummaries = append(imageSummaries, ImageSummary{
 			ID:           image.ID,
 			RepoTags:     image.RepoTags,
@@ -1014,6 +1038,53 @@ func cleanDockerName(names []string) string {
 		return "unnamed"
 	}
 	return strings.TrimPrefix(names[0], "/")
+}
+
+// isAnonymousName returns true when the container name looks like an auto-generated
+// anonymous name (a long hex string or a UUID). These are often short-lived or
+// unhelpful for topology views and can be excluded from dashboards.
+func isAnonymousName(name string) bool {
+	n := strings.TrimSpace(strings.ToLower(name))
+	if n == "" {
+		return true
+	}
+	// canonical UUID form
+	uuidHyphen := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	if uuidHyphen.MatchString(n) {
+		return true
+	}
+	// long hex (Docker sometimes uses short IDs; treat long runs of hex as anonymous)
+	hexLong := regexp.MustCompile(`^[0-9a-f]{12,}$`)
+	if hexLong.MatchString(n) {
+		return true
+	}
+	return false
+}
+
+// isAnonymousImage returns true when all repo tags for an image look like
+// auto-generated identifiers (UUIDs or long hex). These images are not useful
+// for topology overviews and can be omitted.
+func isAnonymousImage(image dockerImage) bool {
+	// If there are no repo tags, consider the image anonymous
+	if len(image.RepoTags) == 0 {
+		return true
+	}
+	uuidHyphen := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	hexLong := regexp.MustCompile(`^[0-9a-f]{12,}$`)
+	allAnonymous := true
+	for _, tag := range image.RepoTags {
+		t := strings.TrimSpace(strings.ToLower(tag))
+		if t == "<none>:<none>" || t == "<none>" || t == "" {
+			continue
+		}
+		if uuidHyphen.MatchString(t) || hexLong.MatchString(t) {
+			continue
+		}
+		// if any tag looks human-readable, it's not anonymous
+		allAnonymous = false
+		break
+	}
+	return allAnonymous
 }
 
 func trimCommand(command string) string {
