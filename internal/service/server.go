@@ -705,6 +705,14 @@ func (s *Server) collectDockerAll(ctx context.Context) (DockerSnapshot, error) {
 
 	containerSummaries := make([]ContainerSummary, 0, len(containers))
 	for _, container := range containers {
+		// Exclude containers that are in the exited state to avoid showing stale stopped containers
+		// in the full overview (e.g., vortexservers full snapshot).
+		state := strings.ToLower(strings.TrimSpace(container.State))
+		status := strings.ToLower(strings.TrimSpace(container.Status))
+		if state == "exited" || strings.Contains(status, "exited") {
+			continue
+		}
+
 		containerSummaries = append(containerSummaries, ContainerSummary{
 			ID:      container.ID,
 			Name:    cleanDockerName(container.Names),
