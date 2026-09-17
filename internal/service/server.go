@@ -1044,17 +1044,18 @@ func cleanDockerName(names []string) string {
 // anonymous name (a long hex string or a UUID). These are often short-lived or
 // unhelpful for topology views and can be excluded from dashboards.
 func isAnonymousName(name string) bool {
-	n := strings.TrimSpace(strings.ToLower(name))
+	n := strings.TrimSpace(name)
 	if n == "" {
 		return true
 	}
-	// canonical UUID form
-	uuidHyphen := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	if uuidHyphen.MatchString(n) {
+	// canonical UUID form (case-insensitive) or UUID-like substring
+	uuidHyphenFull := regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	uuidHyphenAny := regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+	if uuidHyphenFull.MatchString(n) || uuidHyphenAny.FindString(n) != "" {
 		return true
 	}
 	// long hex (Docker sometimes uses short IDs; treat long runs of hex as anonymous)
-	hexLong := regexp.MustCompile(`^[0-9a-f]{12,}$`)
+	hexLong := regexp.MustCompile(`(?i)^[0-9a-f]{12,}$`)
 	if hexLong.MatchString(n) {
 		return true
 	}
