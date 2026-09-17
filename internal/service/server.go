@@ -194,15 +194,15 @@ type dockerPort struct {
 }
 
 type dockerImage struct {
-	ID           string   `json:"Id"`
-	RepoTags     []string `json:"RepoTags"`
+	ID           string            `json:"Id"`
+	RepoTags     []string          `json:"RepoTags"`
 	Labels       map[string]string `json:"Labels"`
-	Size         int64    `json:"Size"`
-	Created      int64    `json:"Created"`
-	Containers   int      `json:"Containers"`
-	Dangling     bool     `json:"Dangling"`
-	Os           string   `json:"Os"`
-	Architecture string   `json:"Architecture"`
+	Size         int64             `json:"Size"`
+	Created      int64             `json:"Created"`
+	Containers   int               `json:"Containers"`
+	Dangling     bool              `json:"Dangling"`
+	Os           string            `json:"Os"`
+	Architecture string            `json:"Architecture"`
 }
 
 type dockerContainerInspect struct {
@@ -339,47 +339,51 @@ func (s *Server) swaggerSpec(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	resp, err := s.buildOverview(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
-    project := r.URL.Query().Get("project")
-    // Map known project aliases to internal project labels
-    switch project {
-    case "travelling", "image-mosaic":
-        resp, err := s.buildProjectOverview(r.Context(), "image-mosaic")
-        if err != nil {
-            writeError(w, err)
-            return
-        }
-        writeJSON(w, http.StatusOK, resp)
-        return
-    case "vortexservers", "vortexservers_co_uk", "tekkifox/vortexservers_co_uk":
-        resp, err := s.buildProjectOverview(r.Context(), "vortexservers_co_uk")
-    if err != nil {
-        writeError(w, err)
-        return
-    }
-    m, err := attachTelemetryToOverview(resp)
-    if err != nil {
-        // fallback to original response
-        writeJSON(w, http.StatusOK, resp)
-        return
-    }
-    writeJSON(w, http.StatusOK, m)
-    return
-  }
-
     resp, err := s.buildOverview(r.Context())
     if err != nil {
         writeError(w, err)
         return
     }
+    writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
+    project := r.URL.Query().Get("project")
+
+    // Require a project query parameter.
+    if project == "" {
+        writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required query parameter: project"})
+        return
+    }
+
+    // Normalize aliases
+    switch project {
+    case "vortexservers", "vortexservers_co_uk", "tekkifox/vortexservers_co_uk":
+        // full overview for vortexservers
+        resp, err := s.buildOverview(r.Context())
+        if err != nil {
+            writeError(w, err)
+            return
+        }
+        m, err := attachTelemetryToOverview(resp)
+        if err != nil {
+            writeJSON(w, http.StatusOK, resp)
+            return
+        }
+        writeJSON(w, http.StatusOK, m)
+        return
+    case "travelling", "image-mosaic":
+        project = "image-mosaic"
+    case "rossmoney", "rossmoney-me", "rossmoney_me":
+        project = "rossmoney_me"
+    }
+
+    // For other projects return project-scoped overview
+    resp, err := s.buildProjectOverview(r.Context(), project)
+    if err != nil {
+        writeError(w, err)
+        return
+    }
     m, err := attachTelemetryToOverview(resp)
     if err != nil {
         writeJSON(w, http.StatusOK, resp)
@@ -387,6 +391,8 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
     }
     writeJSON(w, http.StatusOK, m)
 }
+
+// handleArchitecture is implemented later with normalized project handling.
 
 func (s *Server) handleDocker(w http.ResponseWriter, r *http.Request) {
 	docker, err := s.collectDocker(r.Context())
@@ -407,11 +413,11 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
-	docker, err := s.collectDocker(ctx)
-	if err != nil {
-		system, _ := s.collectSystem(ctx)
-		return degradedOverview(system, err), nil
-	}
+    docker, err := s.collectDockerAll(ctx)
+    if err != nil {
+        system, _ := s.collectSystem(ctx)
+        return degradedOverview(system, err), nil
+    }
 	system, err := s.collectSystem(ctx)
 	if err != nil {
 		return OverviewResponse{}, err
@@ -536,7 +542,7 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) 
 		Docker:      docker,
 		System:      system,
 		Extra: map[string]any{
-			"project": projectLabel,
+			"project":  projectLabel,
 			"category": "Travelling",
 		},
 	}, nil
@@ -672,6 +678,71 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 		Containers: containerSummaries,
 		Images:     imageSummaries,
 	}, nil
+}
+
+// collectDockerAll collects the full docker snapshot without applying a project filter.
+func (s *Server) collectDockerAll(ctx context.Context) (DockerSnapshot, error) {
+    var info dockerInfo
+    if err := s.requestDocker(ctx, "/info", &info); err != nil {
+        return DockerSnapshot{}, err
+    }
+    containersPath := "/containers/json?all=1"
+    var containers []dockerContainer
+    if err := s.requestDocker(ctx, containersPath, &containers); err != nil {
+        return DockerSnapshot{}, err
+    }
+    imagesPath := "/images/json?all=1"
+    var images []dockerImage
+    if err := s.requestDocker(ctx, imagesPath, &images); err != nil {
+        return DockerSnapshot{}, err
+    }
+
+    containerSummaries := make([]ContainerSummary, 0, len(containers))
+    for _, container := range containers {
+        containerSummaries = append(containerSummaries, ContainerSummary{
+            ID:      container.ID,
+            Name:    cleanDockerName(container.Names),
+            Image:   container.Image,
+            State:   container.State,
+            Status:  container.Status,
+            Created: container.Created,
+            Ports:   mapPorts(container.Ports),
+            Labels:  container.Labels,
+            Command: trimCommand(container.Command),
+        })
+    }
+
+    imageSummaries := make([]ImageSummary, 0, len(images))
+    for _, image := range images {
+        imageSummaries = append(imageSummaries, ImageSummary{
+            ID:           image.ID,
+            RepoTags:     image.RepoTags,
+            SizeBytes:    image.Size,
+            Created:      image.Created,
+            Dangling:     image.Dangling,
+            Architecture: image.Architecture,
+            Os:           image.Os,
+        })
+    }
+
+    return DockerSnapshot{
+        Daemon: DockerDaemonSummary{
+            ServerVersion:    info.ServerVersion,
+            ApiVersion:       info.ApiVersion,
+            OperatingSystem:  info.OperatingSystem,
+            KernelVersion:    info.KernelVersion,
+            Architecture:     info.Architecture,
+            DockerRootDir:    info.DockerRootDir,
+            Driver:           info.Driver,
+            NCPU:             info.NCPU,
+            MemTotalBytes:    info.MemTotal,
+            Containers:       info.Containers,
+            ContainersRunning: info.ContainersRunning,
+            Images:           info.Images,
+        },
+        Containers: containerSummaries,
+        Images:     imageSummaries,
+    }, nil
 }
 
 func (s *Server) collectDockerForProject(ctx context.Context, projectLabel string) (DockerSnapshot, error) {
@@ -1555,23 +1626,69 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
-	project := r.URL.Query().Get("project")
-	if project == "travelling" || project == "image-mosaic" {
-		resp, err := s.buildProjectOverview(r.Context(), "image-mosaic")
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
+    project := r.URL.Query().Get("project")
 
-	resp, err := s.buildOverview(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
+    // Require a project query parameter. Do not return full results without an explicit project.
+    if project == "" {
+        writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required query parameter: project"})
+        return
+    }
+
+    // If a project query is provided, return a project-scoped snapshot by default.
+    // Exception: when requesting the vortexservers project we return the full Docker snapshot.
+    if project != "" {
+        // normalize
+        switch project {
+        case "vortexservers", "vortexservers_co_uk", "tekkifox/vortexservers_co_uk":
+            // full snapshot for vortexservers
+            resp, err := s.buildOverview(r.Context())
+            if err != nil {
+                writeError(w, err)
+                return
+            }
+            m, err := attachTelemetryToOverview(resp)
+            if err != nil {
+                writeJSON(w, http.StatusOK, resp)
+                return
+            }
+            writeJSON(w, http.StatusOK, m)
+            return
+        case "rossmoney_me", "rossmoney-me", "rossmoney":
+            // normalize homepage project label to project-scoped name
+            project = "rossmoney_me"
+        case "travelling", "image-mosaic":
+            // explicit mapping
+            project = "image-mosaic"
+        }
+
+        // For all normalized non-vortex projects, return a project-scoped overview
+        resp, err := s.buildProjectOverview(r.Context(), project)
+        if err != nil {
+            writeError(w, err)
+            return
+        }
+        m, err := attachTelemetryToOverview(resp)
+        if err != nil {
+            writeJSON(w, http.StatusOK, resp)
+            return
+        }
+        writeJSON(w, http.StatusOK, m)
+        return
+    }
+
+    // No project requested: return full overview
+    resp, err := s.buildOverview(r.Context())
+    if err != nil {
+        writeError(w, err)
+        return
+    }
+    m, err := attachTelemetryToOverview(resp)
+    if err != nil {
+        writeJSON(w, http.StatusOK, resp)
+        return
+    }
+    writeJSON(w, http.StatusOK, m)
+    return
 }
 
 func (s *Server) handleDocker(w http.ResponseWriter, r *http.Request) {

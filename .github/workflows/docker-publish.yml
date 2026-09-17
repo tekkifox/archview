@@ -14,6 +14,9 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     env:
+      # Support multiple Portainer webhook URLs. Set either PORTAINER_WEBHOOK_URL (single)
+      # or PORTAINER_WEBHOOK_URLS (comma- or newline-separated) in repository secrets.
+      PORTAINER_WEBHOOK_URLS: ${{ secrets.PORTAINER_WEBHOOK_URLS }}
       PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
     steps:
       - name: Checkout repository
@@ -44,11 +47,27 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Trigger Portainer webhook
-        if: ${{ env.PORTAINER_WEBHOOK_URL != '' }}
+      - name: Trigger Portainer webhook(s)
         run: |
-          status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$PORTAINER_WEBHOOK_URL")
-          if [ "$status" != "200" ] && [ "$status" != "202" ] && [ "$status" != "204" ] && [ "$status" != "409" ]; then
-            echo "Portainer webhook failed with HTTP $status"
+          set -eu
+          urls_raw="${PORTAINER_WEBHOOK_URLS:-} ${PORTAINER_WEBHOOK_URL:-}"
+          failures=0
+          echo "Triggering Portainer webhooks..."
+          echo "$urls_raw" | tr ',' '\n' | while read -r url; do
+            url_trim=$(echo "$url" | xargs)
+            if [ -z "$url_trim" ]; then
+              continue
+            fi
+            echo "POST $url_trim"
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url_trim" || true)
+            if [ "$status" != "200" ] && [ "$status" != "202" ] && [ "$status" != "204" ] && [ "$status" != "409" ]; then
+              echo "Portainer webhook $url_trim failed with HTTP $status"
+              failures=$((failures+1))
+            else
+              echo "Portainer webhook $url_trim triggered OK (HTTP $status)"
+            fi
+          done
+          if [ "$failures" -gt 0 ]; then
+            echo "One or more Portainer webhooks failed ($failures)"
             exit 1
           fi
