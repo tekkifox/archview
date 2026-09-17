@@ -422,10 +422,10 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
-    docker, err := s.collectDockerAll(ctx)
-    if err != nil {
-        return OverviewResponse{}, err
-    }
+	docker, err := s.collectDockerAll(ctx)
+	if err != nil {
+		return OverviewResponse{}, err
+	}
 	system, err := s.collectSystem(ctx)
 	if err != nil {
 		return OverviewResponse{}, err
@@ -489,10 +489,10 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 }
 
 func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) (OverviewResponse, error) {
-    docker, err := s.collectDockerForProject(ctx, projectLabel)
-    if err != nil {
-        return OverviewResponse{}, err
-    }
+	docker, err := s.collectDockerForProject(ctx, projectLabel)
+	if err != nil {
+		return OverviewResponse{}, err
+	}
 	system, err := s.collectSystem(ctx)
 	if err != nil {
 		return OverviewResponse{}, err
@@ -785,10 +785,28 @@ func (s *Server) collectDockerForProject(ctx context.Context, projectLabel strin
 		})
 	}
 
+	// Build a set of image references used by project containers so we can include all related image tags.
+	projectImages := map[string]struct{}{}
+	for _, c := range containerSummaries {
+		addProjectImage(projectImages, c.Image)
+	}
+
 	imageSummaries := make([]ImageSummary, 0, len(images))
 	for _, image := range images {
-		if projectLabel != "" && !isProjectImageForLabel(image, projectLabel) {
-			continue
+		// If a project label is supplied, prefer matching images by association with project containers
+		// (image IDs, repo tags or normalized refs). This is more reliable than looking for the label in
+		// repo tags alone and avoids missing tags that belong to the same repo but don't contain the label.
+		if projectLabel != "" {
+			if len(projectImages) > 0 {
+				if !isProjectImage(image, projectImages) {
+					continue
+				}
+			} else {
+				// Fallback: if no container associations were found, fall back to label/tag-based check
+				if !isProjectImageForLabel(image, projectLabel) {
+					continue
+				}
+			}
 		}
 		imageSummaries = append(imageSummaries, ImageSummary{
 			ID:           image.ID,
