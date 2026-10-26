@@ -1,0 +1,10 @@
+{
+  "worktree": {
+    "setup": "make build"
+  },
+  "metadataGeneration": {
+    "commitMessage": {
+      "instructions": "Use conventional commits with a scope"
+    }
+  }
+}
