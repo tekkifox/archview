@@ -22,7 +22,7 @@
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "groupName": "Go modules",
-      "minimumReleaseAge": "3 days",
+      "minimumReleaseAge": "12 hours",
       "automerge": false
     },
     {
