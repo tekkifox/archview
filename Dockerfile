@@ -6,7 +6,7 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN go build -o /out/archview ./cmd/archview
 
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN addgroup -S archview && adduser -S archview -G archview
 WORKDIR /app
