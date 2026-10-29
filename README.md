@@ -155,7 +155,7 @@ resulting access token as a bearer token:
 ```bash
 # 1. Ask the identity provider for a token with the client credentials grant.
 TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
-  -u "monitoring:$MONITORING_CLIENT_SECRET" \
+  -u "$CLIENT_ID:$CLIENT_SECRET" \
   -d "grant_type=client_credentials" \
   -d "scope=archview:read" | jq -r .access_token)
 
@@ -176,7 +176,7 @@ ArchView validates the token and never stores a shared secret:
 Optional restrictions:
 
 ```bash
-# Only these OAuth clients may call the API as machines.
+# Only these OAuth clients (Client IDs, not names) may call the API as machines.
 OAUTH_M2M_CLIENTS=monitoring,ci
 # Tokens must carry all of these scopes.
 OAUTH_M2M_SCOPES=archview:read
@@ -365,9 +365,11 @@ SESSION_COOKIE_SAMESITE=lax
 
 # Machine-to-machine client used by the rossmoney.me CMS (/api/architecture
 # proxy). Access tokens are issued by Auth0 for the API identifier below: their
-# aud is https://archview.rossmoney.me/api, their azp is the "cms" client ID
-# and their scope contains archview:read.
-OAUTH_M2M_CLIENTS=cms
+# aud is https://archview.rossmoney.me/api, their azp is the Client ID of the
+# "cms" application and their scope contains archview:read.
+# Takes the Auth0 Client ID of the "cms" application (the opaque value from its
+# Settings), not the application name.
+OAUTH_M2M_CLIENTS=<cms-app-client-id>
 OAUTH_M2M_SCOPES=archview:read
 OAUTH_M2M_AUDIENCES=https://archview.rossmoney.me/api
 
@@ -384,9 +386,10 @@ Steps to bring it up:
    define the `archview:read` permission. Enable *Add Permissions in the Access
    Token* so the permission appears in the token's `scope`.
 3. Create a **Machine-to-Machine Application** named `cms` and authorize it for
-   that API with `archview:read`. `OAUTH_M2M_CLIENTS` holds its Client ID
-   (`cms`), `OAUTH_M2M_SCOPES` the required permission and
-   `OAUTH_M2M_AUDIENCES` the API identifier.
+   that API with `archview:read`. `OAUTH_M2M_CLIENTS` takes its Client ID — the
+   opaque value from the application's Settings, not its name — while
+   `OAUTH_M2M_SCOPES` holds the required permission and `OAUTH_M2M_AUDIENCES`
+   the API identifier.
 4. Put the values above in the stack's `stack.env` in Portainer and deploy
    `docker-compose.portainer.yml`.
 5. Point the openresty server block for `archview.rossmoney.me` at
