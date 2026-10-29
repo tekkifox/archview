@@ -7,4 +7,10 @@ run:
 test:
 	go test ./...
 
-.PHONY: build run test
+fmt:
+	gofmt -w ./cmd ./internal ./docs
+
+vet:
+	go vet ./...
+
+.PHONY: build run test fmt vet
