@@ -25,8 +25,8 @@ type Principal struct {
 	Name     string `json:"name,omitempty"`
 	Picture  string `json:"picture,omitempty"`
 	Provider string `json:"provider,omitempty"`
-	// Method records how the caller authenticated: "session", "api_key" or
-	// "bearer".
+	// Method records how the caller authenticated: "session", "bearer" (a human
+	// token) or "client_credentials" (an OAuth machine-to-machine token).
 	Method string `json:"method,omitempty"`
 }
 

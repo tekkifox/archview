@@ -33,6 +33,37 @@ func TestVerifyJWTRS256(t *testing.T) {
 	}
 }
 
+// TestVerifyJWTAcceptsGoogleIssuerWithoutScheme covers Google ID tokens that
+// carry "accounts.google.com" while discovery advertises the https URL.
+func TestVerifyJWTAcceptsGoogleIssuerWithoutScheme(t *testing.T) {
+	key := mustRSAKey(t)
+	kid := "rsa-key"
+	jwks := serveJWKS(t, rsaJWK(&key.PublicKey, kid))
+	cache := newJWKSCache(jwks.URL, jwks.Client())
+	now := time.Now()
+
+	cases := map[string]string{
+		"https://accounts.google.com": "https://accounts.google.com",
+		"accounts.google.com":         "https://accounts.google.com",
+		"https://evil.example":        "https://accounts.google.com",
+	}
+	for claimIssuer, expected := range cases {
+		token := signRS256(t, key, kid, validClaims(now, claimIssuer, "archview"))
+		_, err := verifyJWT(context.Background(), token, cache, jwtVerifyOptions{
+			Issuer:    expected,
+			Audiences: []string{"archview"},
+			Now:       now,
+		})
+		wantOK := claimIssuer == "accounts.google.com" || claimIssuer == expected
+		if wantOK && err != nil {
+			t.Fatalf("issuer %q should be accepted for %q: %v", claimIssuer, expected, err)
+		}
+		if !wantOK && err == nil {
+			t.Fatalf("issuer %q should be rejected for %q", claimIssuer, expected)
+		}
+	}
+}
+
 func TestVerifyJWTES256(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

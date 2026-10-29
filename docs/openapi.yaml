@@ -205,8 +205,14 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: API key or OIDC JWT
-      description: A static API key from `API_KEYS`, or a JWT signed by the configured identity provider.
+      bearerFormat: OAuth 2.0 access token
+      description: |
+        An OAuth 2.0 access token issued by the configured identity provider.
+
+        Machine clients obtain one with the `client_credentials` grant and send it
+        as `Authorization: Bearer <token>`. JWTs are verified against the provider
+        JWKS; opaque tokens are validated with RFC 7662 introspection when
+        `OAUTH_INTROSPECTION_URL` is configured. Static API keys are not supported.
     cookieAuth:
       type: apiKey
       in: cookie
@@ -250,6 +256,29 @@ components:
           type: string
         userUrl:
           type: string
+        machine:
+          type: object
+          description: How a service obtains a token for this API with the OAuth 2.0 client credentials grant.
+          properties:
+            grant:
+              type: string
+              enum: [client_credentials]
+            tokenType:
+              type: string
+            tokenUrl:
+              type: string
+              description: Identity provider token endpoint.
+            audiences:
+              type: array
+              items:
+                type: string
+            scopes:
+              type: array
+              items:
+                type: string
+            introspection:
+              type: boolean
+              description: Opaque access tokens are validated with RFC 7662 introspection.
     Principal:
       type: object
       properties:
@@ -265,7 +294,7 @@ components:
           type: string
         method:
           type: string
-          enum: [session, api_key, bearer]
+          enum: [session, bearer, client_credentials]
     HealthResponse:
       type: object
       properties:

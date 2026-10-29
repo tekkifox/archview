@@ -17,8 +17,8 @@ binary and served from `/docs/openapi.yaml`.
 
 ## Protected endpoints
 
-Send either the session cookie created by the login flow, a static API key, or
-an OIDC bearer JWT:
+Send either the session cookie created by the login flow or an OAuth 2.0 access
+token (client credentials grant or an OIDC bearer JWT):
 
 - `GET /auth/user`
 - `GET /api/overview`

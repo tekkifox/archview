@@ -10,7 +10,8 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 - OAuth 2.0 / OpenID Connect login with PKCE, state and nonce validation
 - Non-OIDC OAuth 2.0 providers (for example GitHub) through userinfo
 - Stateless, signed session cookies: no database, safe to run multiple replicas
-- Bearer JWT validation against the provider's JWKS and static API keys for service-to-service calls
+- Machine-to-machine access with the OAuth 2.0 client credentials grant (no shared API keys)
+- Bearer JWT validation against the provider's JWKS plus RFC 7662 introspection for opaque tokens
 - Email/domain allowlists
 - Configurable CORS, security headers, health and readiness probes
 - Embedded OpenAPI specification with Swagger UI at `/docs`
@@ -60,8 +61,11 @@ Every protected request must present **one** of:
 | Credential | Use case |
 | --- | --- |
 | Signed session cookie | Browsers after the OAuth login flow |
-| `Authorization: Bearer <api-key>` | Service-to-service, monitoring, CI |
-| `Authorization: Bearer <jwt>` | Callers that already hold an OIDC access/ID token |
+| `Authorization: Bearer <access-token>` | Machines using the OAuth client credentials grant, or callers that already hold an OIDC access/ID token |
+
+There are no static API keys: every machine gets its own token from the identity
+provider, so a leaked credential can be revoked and rotated there without
+touching ArchView.
 
 ### 1. Register an OAuth application
 
@@ -143,22 +147,76 @@ For a frontend on a **different site**, either:
 
 Session cookies are `HttpOnly`, `Secure` (by default), and signed with HMAC-SHA256. The session payload contains only the subject, email, name, picture, provider and expiry — no provider tokens — so replicas only need the shared `SESSION_SECRET`.
 
-### 5. Machine-to-machine API keys
+### 5. Machine-to-machine access (OAuth client credentials)
+
+Services authenticate **to the identity provider**, not to ArchView, and send the
+resulting access token as a bearer token:
 
 ```bash
-API_KEYS="monitoring:2f7c...d41,ci:91ab...7e0"
+# 1. Ask the identity provider for a token with the client credentials grant.
+TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
+  -u "monitoring:$MONITORING_CLIENT_SECRET" \
+  -d "grant_type=client_credentials" \
+  -d "scope=archview:read" | jq -r .access_token)
+
+# 2. Call ArchView with it.
+curl -H "Authorization: Bearer $TOKEN" https://archview.example.com/api/system
 ```
+
+ArchView validates the token and never stores a shared secret:
+
+- **JWT access tokens** are verified against the provider JWKS (`exp`, `nbf`,
+  `iss`, `aud`) exactly like human tokens. Use `OAUTH_M2M_AUDIENCES` when the
+  provider issues a different `aud` for applications than `OAUTH_CLIENT_ID`.
+- **Opaque access tokens** are validated through RFC 7662 introspection, enabled
+  with `OAUTH_INTROSPECTION_URL`. Google service accounts issue opaque tokens;
+  point it at `https://oauth2.googleapis.com/tokeninfo` with
+  `OAUTH_INTROSPECTION_METHOD=GET` and `OAUTH_INTROSPECTION_AUTH_METHOD=none`.
+
+Optional restrictions:
 
 ```bash
-curl -H "Authorization: Bearer 2f7c...d41" https://archview.example.com/api/system
+# Only these OAuth clients may call the API as machines.
+OAUTH_M2M_CLIENTS=monitoring,ci
+# Tokens must carry all of these scopes.
+OAUTH_M2M_SCOPES=archview:read
 ```
 
-Only the label (`monitoring`) is reported in `/auth/user` and logs; the key itself is never echoed. API keys do not require an identity provider or `SESSION_SECRET`.
+Machine tokens bypass `OAUTH_ALLOWED_EMAILS`/`OAUTH_ALLOWED_DOMAINS` (they have no
+email) and are governed by the two allowlists above. `/auth/user` reports them
+with `"method": "client_credentials"` and `"sub": "client:<client_id>"`.
 
 ### 6. Bearer JWTs
 
 In `oidc` mode, JWTs signed by the provider are accepted. ArchView verifies the signature against the provider JWKS and checks `exp`, `nbf`, `iss` and `aud`. Accepted audiences default to `OAUTH_CLIENT_ID` and can be extended with `OAUTH_AUDIENCES`.
 
+
+## Troubleshooting login
+
+`login state is missing or expired` means the callback arrived without the
+`archview_oauth_state` cookie. The callback now logs the host, scheme, cookie
+attributes and received cookie names, and the JSON response carries a `hint`.
+The usual causes:
+
+| Symptom | Fix |
+| --- | --- |
+| `SESSION_COOKIE_SECURE=true` but `/auth/login` is reached over http | Serve the login over https, or set `TRUST_PROXY_HEADERS=true` so `X-Forwarded-Proto: https` is honoured |
+| Login starts on one host and the callback lands on another (`www.` vs apex, http vs https) | Use the same hostname as `OAUTH_REDIRECT_URL` for both steps |
+| `SESSION_COOKIE_SAMESITE=strict` | The state cookie is forced to `lax`; the setting only affects the session cookie now |
+| The provider consent screen (MFA, account chooser) takes longer than the state lifetime | Raise `OAUTH_STATE_TTL` (default `10m`, maximum `1h`) |
+| Multiple replicas with different `SESSION_SECRET` values | Share one secret; otherwise the error is `login state is invalid or expired` |
+| Reverse proxy mounts ArchView under a path prefix | The state cookie is scoped to `/`, so it is sent to `/prefix/auth/callback` |
+
+For Google specifically:
+
+- `OAUTH_ISSUER=https://accounts.google.com` is correct; ID tokens that carry
+  `iss: accounts.google.com` (without the scheme) are accepted too.
+- `OAUTH_REDIRECT_URL` must match the authorised redirect URI byte for byte
+  (`https://…/auth/callback`, no trailing slash).
+- Google does not implement the client credentials grant. For machine access use
+  a service account and validate its opaque token through
+  `OAUTH_INTROSPECTION_URL=https://oauth2.googleapis.com/tokeninfo` with
+  `OAUTH_INTROSPECTION_METHOD=GET` and `OAUTH_INTROSPECTION_AUTH_METHOD=none`.
 
 ## Configuration reference
 
@@ -200,8 +258,14 @@ In `oidc` mode, JWTs signed by the provider are accepted. ArchView verifies the 
 | `OAUTH_PICTURE_CLAIM` | `picture` | Avatar claim |
 | `OAUTH_ALLOWED_EMAILS` | — | Comma-separated exact email allowlist |
 | `OAUTH_ALLOWED_DOMAINS` | — | Comma-separated domains (subdomains included) |
-| `OAUTH_AUDIENCES` | `OAUTH_CLIENT_ID` | Accepted `aud` values for bearer JWTs |
-| `API_KEYS` | — | Comma-separated `key` or `label:key` static bearer tokens |
+| `OAUTH_AUDIENCES` | `OAUTH_CLIENT_ID` | Accepted `aud` values for human bearer JWTs |
+| `OAUTH_M2M_AUDIENCES` | `OAUTH_AUDIENCES` | Accepted `aud` values for machine (client credentials) tokens |
+| `OAUTH_M2M_CLIENTS` | — | Comma-separated client IDs allowed to call the API as machines |
+| `OAUTH_M2M_SCOPES` | — | Comma-separated scopes a machine token must carry |
+| `OAUTH_INTROSPECTION_URL` | — | RFC 7662 introspection endpoint for opaque access tokens |
+| `OAUTH_INTROSPECTION_METHOD` | `POST` | `POST` (RFC 7662) or `GET` (Google tokeninfo) |
+| `OAUTH_INTROSPECTION_AUTH_METHOD` | `client_secret_basic` | `client_secret_basic`, `client_secret_post` or `none` |
+| `OAUTH_STATE_TTL` | `10m` | Lifetime of the OAuth state cookie (maximum `1h`) |
 | `SESSION_SECRET` | — | 32+ bytes; signs session and OAuth state cookies |
 | `SESSION_TTL` | `8h` | Session lifetime (maximum `720h`) |
 | `SESSION_COOKIE_NAME` | `archview_session` | Session cookie name |
@@ -299,8 +363,11 @@ SESSION_TTL=8h
 SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAMESITE=lax
 
-# Server-to-server key used by the rossmoney.me CMS (/api/architecture proxy).
-API_KEYS=rossmoney-me:replace-with-a-long-random-key
+# Machine-to-machine client used by the rossmoney.me CMS (/api/architecture
+# proxy). Register "cms" as a client with the client_credentials grant and the
+# archview:read scope, then give the CMS its own client ID and secret.
+OAUTH_M2M_CLIENTS=cms
+OAUTH_M2M_SCOPES=archview:read
 
 TRUST_PROXY_HEADERS=true
 ```
@@ -310,13 +377,17 @@ Steps to bring it up:
 1. Register `https://archview.rossmoney.me/auth/callback` as the redirect URI of
    a confidential (web) client with the provider, requesting the
    `openid profile email` scopes.
-2. Put the values above in the stack's `stack.env` in Portainer and deploy
+2. Register a second provider client (`cms`) with the client credentials grant
+   and the `archview:read` scope for the CMS.
+3. Put the values above in the stack's `stack.env` in Portainer and deploy
    `docker-compose.portainer.yml`.
-3. Point the openresty server block for `archview.rossmoney.me` at
+4. Point the openresty server block for `archview.rossmoney.me` at
    `172.18.0.10:8083` and pass `Host`, `X-Forwarded-Proto` and
    `X-Forwarded-For` through unchanged.
-4. Copy the `API_KEYS` value (the part after `rossmoney-me:`) into the CMS stack
-   as `ARCHVIEW_API_KEY`, with `ARCHVIEW_URL=https://archview.rossmoney.me`.
+5. Store the CMS client ID and secret in the CMS stack as
+   `ARCHVIEW_CLIENT_ID`/`ARCHVIEW_CLIENT_SECRET`, with
+   `ARCHVIEW_URL=https://archview.rossmoney.me`. The CMS exchanges them for a
+   token at the provider's token endpoint and calls ArchView with it.
 
 Verify the boundary:
 
@@ -327,8 +398,11 @@ curl -sI https://archview.rossmoney.me/api/architecture | grep -i www-authentica
 # The login entry point hands the browser to the identity provider.
 curl -sI https://archview.rossmoney.me/auth/login | grep -i location
 
-# The CMS key gets a snapshot without a browser session.
-curl -s -H "Authorization: Bearer $ARCHVIEW_API_KEY" \
+# A client-credentials token gets a snapshot without a browser session.
+TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
+  -u "$ARCHVIEW_CLIENT_ID:$ARCHVIEW_CLIENT_SECRET" \
+  -d "grant_type=client_credentials" -d "scope=archview:read" | jq -r .access_token)
+curl -s -H "Authorization: Bearer $TOKEN" \
   "https://archview.rossmoney.me/api/architecture?project=image-mosaic" | head -c 200
 ```
 
@@ -351,7 +425,7 @@ Example request:
 
 ```bash
 curl -s \
-  -H "Authorization: Bearer $ARCHVIEW_API_KEY" \
+  -H "Authorization: Bearer $TOKEN" \
   https://archview.example.com/api/architecture?project=image-mosaic | jq .
 ```
 
@@ -364,7 +438,7 @@ make test
 go test -race ./...
 ```
 
-The test suite covers the PKCE/state/nonce login flow, JWT and JWKS validation, API key auth, allowlists, CORS, security headers and the absence of the old dashboard.
+The test suite covers the PKCE/state/nonce login flow, JWT and JWKS validation, client-credentials and introspection auth, allowlists, CORS, security headers and the absence of the old dashboard.
 
 ## Security notes
 
@@ -373,5 +447,5 @@ The test suite covers the PKCE/state/nonce login flow, JWT and JWKS validation, 
 - Prefer allowlists (`OAUTH_ALLOWED_EMAILS` / `OAUTH_ALLOWED_DOMAINS`) for private APIs.
 - Provider endpoints must use HTTPS unless they are loopback addresses; `OAUTH_ALLOW_INSECURE_HTTP` exists for local development.
 - Session and OAuth state cookies are signed and verified in constant time; JWT signatures are verified against the provider JWKS with key-rotation support.
-- API keys and client secrets are never written to responses or logs.
+- Bearer tokens, client secrets and introspected tokens are never written to responses or logs.
 

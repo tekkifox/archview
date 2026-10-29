@@ -35,10 +35,15 @@ var (
 
 // AuthConfig configures OAuth/OIDC login and API authentication.
 //
-// The API accepts three kinds of credentials:
-//   - a signed session cookie created by the OAuth login flow,
-//   - a static API key (see APIKeys) for service-to-service calls,
-//   - an OIDC bearer token validated against the provider's JWKS.
+// The API accepts two kinds of credentials:
+//   - a signed session cookie created by the OAuth login flow (browsers),
+//   - an OAuth 2.0 access token presented as a bearer token (machines and
+//     callers that already hold a provider token). JWTs are verified locally
+//     against the provider's JWKS; opaque tokens are introspected when
+//     OAUTH_INTROSPECTION_URL is configured.
+//
+// Machine-to-machine callers fetch their tokens from the identity provider
+// with the client credentials grant, so ArchView stores no static shared keys.
 type AuthConfig struct {
 	// Mode is "none", "oidc" or "oauth2". When empty it is inferred from the
 	// configured endpoints. "oauth2" is for providers without OIDC discovery,
@@ -80,17 +85,37 @@ type AuthConfig struct {
 	// client ID.
 	Audiences []string
 
-	// APIKeys are static bearer tokens for machine-to-machine access. Entries
-	// may be labelled as "label:key"; the label is reported in the principal
-	// but never the key itself.
-	APIKeys []string
+	// MachineClients optionally restricts machine-to-machine access to these
+	// OAuth client IDs (the token's client_id or azp claim).
+	MachineClients []string
+	// MachineScopes lists the scopes a token must carry to be accepted as a
+	// machine-to-machine caller. Empty accepts any application token.
+	MachineScopes []string
+	// MachineAudiences overrides Audiences for machine tokens. Set it when the
+	// provider issues access tokens for a different audience than the client ID.
+	MachineAudiences []string
+
+	// IntrospectionURL enables RFC 7662 token introspection so opaque access
+	// tokens (for example Google service-account tokens) can be validated.
+	IntrospectionURL string
+	// IntrospectionAuthMethod authenticates ArchView to the introspection
+	// endpoint: "client_secret_basic" (default), "client_secret_post" or
+	// "none" for providers such as Google's tokeninfo endpoint.
+	IntrospectionAuthMethod string
+	// IntrospectionMethod is "POST" (RFC 7662, default) or "GET" for providers
+	// that expose introspection as a query-string endpoint.
+	IntrospectionMethod string
 
 	// SessionSecret signs the session cookie (HMAC-SHA256). It must be at least
 	// 32 bytes and identical across replicas.
 	SessionSecret []byte
 	SessionTTL    time.Duration
-	CookieName    string
-	CookieDomain  string
+	// StateTTL bounds how long the OAuth state cookie stays valid. Long
+	// identity-provider consent flows (MFA, account chooser) can exceed the
+	// default, which surfaces as "login state is missing or expired".
+	StateTTL     time.Duration
+	CookieName   string
+	CookieDomain string
 	// CookieSameSite is "lax", "strict" or "none". Use "none" (with
 	// CookieSecure=true) only when a browser frontend is hosted on a different
 	// site and calls the API with credentials.
@@ -113,9 +138,30 @@ type AuthConfig struct {
 	HTTPTimeout time.Duration
 }
 
-type apiKey struct {
-	label string
-	value string
+// introspectionResponse is an RFC 7662 introspection reply. Providers such as
+// Google's tokeninfo endpoint return a subset of these fields, so every field is
+// optional except the token's validity and expiry.
+type introspectionResponse struct {
+	// Active is a pointer because Google's tokeninfo endpoint omits it entirely;
+	// an absent flag is inferred from the expiry instead.
+	Active           *bool           `json:"active"`
+	Scope            string          `json:"scope"`
+	Scp              json.RawMessage `json:"scp"`
+	Sub              string          `json:"sub"`
+	Username         string          `json:"username"`
+	Email            string          `json:"email"`
+	ClientID         string          `json:"client_id"`
+	Azp              string          `json:"azp"`
+	Aud              json.RawMessage `json:"aud"`
+	Iss              string          `json:"iss"`
+	Exp              int64           `json:"exp"`
+	Iat              int64           `json:"iat"`
+	Nbf              int64           `json:"nbf"`
+	ExpiresIn        int64           `json:"expires_in"`
+	TokenType        string          `json:"token_type"`
+	GrantType        string          `json:"grant_type"`
+	Error            string          `json:"error"`
+	ErrorDescription string          `json:"error_description"`
 }
 
 type providerMetadata struct {
@@ -133,9 +179,11 @@ type providerMetadata struct {
 type AuthManager struct {
 	cfg       AuthConfig
 	client    *http.Client
-	apiKeys   []apiKey
 	scopes    []string
 	audiences []string
+	// machineAudiences is the audience set accepted for client-credentials
+	// tokens. It falls back to audiences when OAUTH_M2M_AUDIENCES is empty.
+	machineAudiences []string
 
 	mu         sync.Mutex
 	metadata   providerMetadata
@@ -183,6 +231,15 @@ func NewAuthManager(cfg AuthConfig) (*AuthManager, error) {
 	if cfg.SessionTTL > 30*24*time.Hour {
 		return nil, errors.New("SESSION_TTL must not exceed 720h")
 	}
+	if cfg.StateTTL <= 0 {
+		cfg.StateTTL = stateTTL
+	}
+	if cfg.StateTTL > time.Hour {
+		return nil, errors.New("OAUTH_STATE_TTL must not exceed 1h")
+	}
+	if cfg.StateTTL < time.Minute {
+		return nil, errors.New("OAUTH_STATE_TTL must be at least 1m")
+	}
 	if cfg.PostLoginRedirect == "" {
 		cfg.PostLoginRedirect = "/"
 	}
@@ -225,6 +282,35 @@ func NewAuthManager(cfg AuthConfig) (*AuthManager, error) {
 		return nil, fmt.Errorf("unsupported OAUTH_TOKEN_AUTH_METHOD %q", cfg.TokenAuthMethod)
 	}
 
+	cfg.IntrospectionMethod = strings.ToUpper(strings.TrimSpace(cfg.IntrospectionMethod))
+	if cfg.IntrospectionMethod == "" {
+		cfg.IntrospectionMethod = http.MethodPost
+	}
+	switch cfg.IntrospectionMethod {
+	case http.MethodPost, http.MethodGet:
+	default:
+		return nil, fmt.Errorf("unsupported OAUTH_INTROSPECTION_METHOD %q (want POST or GET)", cfg.IntrospectionMethod)
+	}
+	cfg.IntrospectionAuthMethod = strings.ToLower(strings.TrimSpace(cfg.IntrospectionAuthMethod))
+	if cfg.IntrospectionAuthMethod == "" {
+		if cfg.ClientSecret != "" {
+			cfg.IntrospectionAuthMethod = "client_secret_basic"
+		} else {
+			cfg.IntrospectionAuthMethod = "none"
+		}
+	}
+	switch cfg.IntrospectionAuthMethod {
+	case "client_secret_basic", "client_secret_post", "none":
+	default:
+		return nil, fmt.Errorf("unsupported OAUTH_INTROSPECTION_AUTH_METHOD %q", cfg.IntrospectionAuthMethod)
+	}
+	if cfg.IntrospectionURL != "" && cfg.IntrospectionAuthMethod != "none" && cfg.ClientSecret == "" {
+		return nil, errors.New("OAUTH_CLIENT_SECRET is required to authenticate to OAUTH_INTROSPECTION_URL")
+	}
+	if cfg.Mode == authModeNone && (len(cfg.MachineClients) > 0 || len(cfg.MachineScopes) > 0 || cfg.IntrospectionURL != "") {
+		return nil, errors.New("machine-to-machine OAuth requires AUTH_MODE=oidc or oauth2")
+	}
+
 	if cfg.Mode != authModeNone {
 		if cfg.ClientID == "" {
 			return nil, errors.New("OAUTH_CLIENT_ID is required when authentication is enabled")
@@ -252,6 +338,7 @@ func NewAuthManager(cfg AuthConfig) (*AuthManager, error) {
 			"OAUTH_EMAILS_URL":        cfg.EmailsURL,
 			"OAUTH_JWKS_URL":          cfg.JWKSURL,
 			"OAUTH_REDIRECT_URL":      cfg.RedirectURL,
+			"OAUTH_INTROSPECTION_URL": cfg.IntrospectionURL,
 		} {
 			if err := validateAuthURL(name, raw, cfg.AllowInsecureHTTP); err != nil {
 				return nil, err
@@ -260,10 +347,9 @@ func NewAuthManager(cfg AuthConfig) (*AuthManager, error) {
 	}
 
 	manager := &AuthManager{
-		cfg:     cfg,
-		client:  &http.Client{Timeout: cfg.HTTPTimeout},
-		apiKeys: parseAPIKeys(cfg.APIKeys),
-		scopes:  cfg.Scopes,
+		cfg:    cfg,
+		client: &http.Client{Timeout: cfg.HTTPTimeout},
+		scopes: cfg.Scopes,
 	}
 	if len(manager.scopes) == 0 && cfg.Mode == authModeOIDC {
 		manager.scopes = []string{"openid", "profile", "email"}
@@ -271,6 +357,10 @@ func NewAuthManager(cfg AuthConfig) (*AuthManager, error) {
 	manager.audiences = cfg.Audiences
 	if len(manager.audiences) == 0 && cfg.Mode != authModeNone {
 		manager.audiences = []string{cfg.ClientID}
+	}
+	manager.machineAudiences = cfg.MachineAudiences
+	if len(manager.machineAudiences) == 0 {
+		manager.machineAudiences = manager.audiences
 	}
 
 	if cfg.Mode != authModeNone {
@@ -282,26 +372,21 @@ func NewAuthManager(cfg AuthConfig) (*AuthManager, error) {
 				log.Printf("archview auth: WARNING: OAUTH_SCOPES entry %q does not look like a scope; put address allowlists in OAUTH_ALLOWED_EMAILS and keep each variable on its own line", scope)
 			}
 		}
+		if cfg.CookieSameSite == "strict" {
+			log.Printf("archview auth: WARNING: SESSION_COOKIE_SAMESITE=strict prevents the browser from sending the OAuth state cookie when the identity provider redirects back to /auth/callback; the login state cookie is forced to lax")
+		}
+		log.Printf("archview auth: machine-to-machine access uses the oauth2 client_credentials grant (audiences: %s)", strings.Join(manager.machineAudiences, " "))
+		if len(cfg.MachineScopes) > 0 {
+			log.Printf("archview auth: machine tokens must carry scopes: %s", strings.Join(cfg.MachineScopes, " "))
+		}
+		if len(cfg.MachineClients) > 0 {
+			log.Printf("archview auth: machine tokens are restricted to clients: %s", strings.Join(cfg.MachineClients, " "))
+		}
+		if cfg.IntrospectionURL != "" {
+			log.Printf("archview auth: opaque bearer tokens are introspected at %s", cfg.IntrospectionURL)
+		}
 	}
 	return manager, nil
-}
-
-func parseAPIKeys(raw []string) []apiKey {
-	keys := make([]apiKey, 0, len(raw))
-	for _, entry := range raw {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		label := "api-key"
-		value := entry
-		if name, key, ok := strings.Cut(entry, ":"); ok && strings.TrimSpace(name) != "" && strings.TrimSpace(key) != "" {
-			label = strings.TrimSpace(name)
-			value = strings.TrimSpace(key)
-		}
-		keys = append(keys, apiKey{label: label, value: value})
-	}
-	return keys
 }
 
 func validateAuthURL(name, raw string, allowInsecure bool) error {
@@ -358,7 +443,7 @@ func validateRedirectURL(name, value string) error {
 
 // Enabled reports whether requests must present credentials.
 func (a *AuthManager) Enabled() bool {
-	return a.cfg.Mode != authModeNone || len(a.apiKeys) > 0
+	return a.cfg.Mode != authModeNone
 }
 
 // PublicInfo is safe to expose to unauthenticated clients and lets a frontend
@@ -372,6 +457,30 @@ func (a *AuthManager) PublicInfo() map[string]any {
 		info["loginUrl"] = "/auth/login"
 		info["logoutUrl"] = "/auth/logout"
 		info["userUrl"] = "/auth/user"
+		info["machine"] = a.machineInfo()
+	}
+	return info
+}
+
+// machineInfo describes how a service can obtain a token for the API. ArchView
+// never issues these tokens itself: clients authenticate to the identity
+// provider with their own credentials, so no shared key is stored here.
+func (a *AuthManager) machineInfo() map[string]any {
+	info := map[string]any{
+		"grant":     "client_credentials",
+		"tokenType": "Bearer",
+	}
+	if a.cfg.TokenURL != "" {
+		info["tokenUrl"] = a.cfg.TokenURL
+	}
+	if len(a.machineAudiences) > 0 {
+		info["audiences"] = a.machineAudiences
+	}
+	if len(a.cfg.MachineScopes) > 0 {
+		info["scopes"] = a.cfg.MachineScopes
+	}
+	if a.cfg.IntrospectionURL != "" {
+		info["introspection"] = true
 	}
 	return info
 }
@@ -562,12 +671,89 @@ func (a *AuthManager) stateCookie(value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name:     stateCookieName,
 		Value:    value,
-		Path:     "/auth",
+		Path:     "/",
 		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   a.cfg.CookieSecure,
-		SameSite: a.sameSite(),
+		SameSite: a.stateSameSite(),
+		Domain:   a.cfg.CookieDomain,
 	}
+}
+
+// stateSameSite keeps the state cookie on lax. The browser comes back from the
+// identity provider with a cross-site top-level navigation, and a strict cookie
+// is not sent with it, which would fail every login with "login state is
+// missing or expired".
+func (a *AuthManager) stateSameSite() http.SameSite {
+	if a.sameSite() == http.SameSiteStrictMode {
+		return http.SameSiteLaxMode
+	}
+	return a.sameSite()
+}
+
+// stateTTLValue is the configured lifetime of the OAuth state cookie.
+func (a *AuthManager) stateTTLValue() time.Duration {
+	if a.cfg.StateTTL > 0 {
+		return a.cfg.StateTTL
+	}
+	return stateTTL
+}
+
+// effectiveScheme returns the scheme the browser used, honouring the proxy
+// headers only when they are trusted.
+func (a *AuthManager) effectiveScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if a.cfg.TrustProxyHeaders {
+		if forwarded := strings.ToLower(firstHeaderValue(r.Header.Get("X-Forwarded-Proto"))); forwarded != "" {
+			return forwarded
+		}
+	}
+	return "http"
+}
+
+// warnIfStateCookieWillBeDropped catches the most common cause of "login state
+// is missing or expired": a Secure cookie set over plain HTTP is discarded by
+// the browser, so the callback never sees it.
+func (a *AuthManager) warnIfStateCookieWillBeDropped(r *http.Request) {
+	scheme := a.effectiveScheme(r)
+	if a.cfg.CookieSecure && scheme != "https" {
+		log.Printf("archview auth: WARNING: /auth/login was reached over %s while SESSION_COOKIE_SECURE=true; browsers discard Secure cookies on insecure connections, so the callback will fail with %q. Serve the login over https, or set TRUST_PROXY_HEADERS=true when a TLS proxy forwards to ArchView", scheme, "login state is missing or expired")
+	}
+}
+
+// logMissingStateCookie records everything needed to explain why the browser
+// did not return the OAuth state cookie.
+func (a *AuthManager) logMissingStateCookie(r *http.Request) {
+	names := make([]string, 0, 4)
+	for _, cookie := range r.Cookies() {
+		names = append(names, cookie.Name)
+	}
+	log.Printf("archview auth: callback is missing the %q cookie (host=%q scheme=%q path=%q secure=%t sameSite=%q domain=%q receivedCookies=%v secFetchSite=%q)",
+		stateCookieName, r.Host, a.effectiveScheme(r), r.URL.Path, a.cfg.CookieSecure, a.cfg.CookieSameSite, a.cfg.CookieDomain, names, r.Header.Get("Sec-Fetch-Site"))
+
+	switch {
+	case a.cfg.CookieSecure && a.effectiveScheme(r) != "https":
+		log.Printf("archview auth: the callback was reached over %s but SESSION_COOKIE_SECURE=true, so the browser discarded the Secure state cookie; terminate TLS before ArchView or set TRUST_PROXY_HEADERS=true so X-Forwarded-Proto is honoured", a.effectiveScheme(r))
+	case a.cfg.CookieDomain != "" && !strings.HasSuffix(strings.ToLower(r.Host), strings.ToLower(strings.TrimPrefix(a.cfg.CookieDomain, "."))):
+		log.Printf("archview auth: SESSION_COOKIE_DOMAIN=%q does not cover the callback host %q, so the browser rejected the state cookie", a.cfg.CookieDomain, r.Host)
+	case a.cfg.RedirectURL != "" && !sameHost(a.cfg.RedirectURL, r.Host):
+		log.Printf("archview auth: OAUTH_REDIRECT_URL points at a different host than this callback (%q); start the login flow on the same hostname registered with the identity provider", a.cfg.RedirectURL)
+	case a.cfg.CookieSameSite == "strict":
+		log.Printf("archview auth: SESSION_COOKIE_SAMESITE=strict stops the browser from sending the state cookie on the provider redirect; use lax")
+	default:
+		log.Printf("archview auth: the state cookie was never stored or has expired (stateTtl=%s); this usually means the login and callback use different hosts or schemes, the user blocked cookies, or the provider consent screen took longer than the state lifetime", a.stateTTLValue())
+	}
+}
+
+// sameHost reports whether rawURL refers to the given request host.
+func sameHost(rawURL, host string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return true
+	}
+	return strings.EqualFold(parsed.Host, host)
 }
 
 func (a *AuthManager) sessionCookie(value string, expires time.Time) *http.Cookie {
@@ -720,13 +906,139 @@ func (a *AuthManager) checkAllowed(principal Principal) error {
 	return errNotAllowed
 }
 
-func (a *AuthManager) matchAPIKey(token string) (apiKey, bool) {
-	for _, key := range a.apiKeys {
-		if subtle.ConstantTimeCompare([]byte(key.value), []byte(token)) == 1 {
-			return key, true
+// looksLikeJWT reports whether the token is a compact JWS. Opaque access tokens
+// are routed to the introspection endpoint instead.
+func looksLikeJWT(token string) bool {
+	return strings.Count(token, ".") == 2
+}
+
+// claimScope returns the scopes carried by a token. Providers use either a
+// space-delimited `scope` string (RFC 6749) or a `scp` claim that may also be a
+// JSON array (Microsoft Entra ID).
+func claimScope(claims map[string]any) []string {
+	for _, name := range []string{"scope", "scp"} {
+		switch value := claims[name].(type) {
+		case string:
+			if fields := strings.Fields(value); len(fields) > 0 {
+				return fields
+			}
+		case []any:
+			scopes := make([]string, 0, len(value))
+			for _, item := range value {
+				if s, ok := item.(string); ok && s != "" {
+					scopes = append(scopes, s)
+				}
+			}
+			if len(scopes) > 0 {
+				return scopes
+			}
 		}
 	}
-	return apiKey{}, false
+	return nil
+}
+
+func scopeContainsAll(granted, required []string) bool {
+	for _, want := range required {
+		found := false
+		for _, got := range granted {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func containsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// bearerClientID returns the OAuth client that a token was issued to.
+func bearerClientID(claims map[string]any) string {
+	for _, name := range []string{"client_id", "azp", "appid"} {
+		if value := claimString(claims, name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// isMachineToken distinguishes an application token (client credentials) from a
+// token that represents a human. Machine tokens are exempt from the
+// email/domain allowlist and are governed by MachineClients/MachineScopes.
+func (a *AuthManager) isMachineToken(claims map[string]any) bool {
+	for _, name := range []string{"gty", "grant_type"} {
+		if value := claimString(claims, name); strings.EqualFold(value, "client_credentials") || strings.EqualFold(value, "client-credentials") {
+			return true
+		}
+	}
+	if value := claimString(claims, "token_type"); strings.EqualFold(value, "client_credentials") {
+		return true
+	}
+	if claimString(claims, a.cfg.EmailClaim) != "" || claimString(claims, "username") != "" {
+		return false
+	}
+	if len(a.cfg.MachineScopes) > 0 && scopeContainsAll(claimScope(claims), a.cfg.MachineScopes) {
+		return true
+	}
+	// client_id is only set on application tokens (azp is also used by ID
+	// tokens), so its presence is safe evidence of a machine caller.
+	return claimString(claims, "client_id") != ""
+}
+
+// checkAudience enforces the accepted audience set for the token kind. Human
+// tokens use Audiences, machine tokens use MachineAudiences.
+func (a *AuthManager) checkAudience(claims map[string]any, machine bool) error {
+	expected := a.audiences
+	if machine && len(a.machineAudiences) > 0 {
+		expected = a.machineAudiences
+	}
+	if len(expected) == 0 || audienceMatches(claims["aud"], expected) {
+		return nil
+	}
+	return fmt.Errorf("%w: unexpected audience", errInvalidToken)
+}
+
+// principalFromMachineClaims builds the principal for a client-credentials
+// token and applies the machine allowlists.
+func (a *AuthManager) principalFromMachineClaims(claims map[string]any) (Principal, error) {
+	clientID := bearerClientID(claims)
+	subject := claimString(claims, a.cfg.SubjectClaim)
+	if subject == "" {
+		subject = clientID
+	}
+	if subject == "" {
+		return Principal{}, fmt.Errorf("%w: machine token has no subject or client_id", errInvalidToken)
+	}
+	if len(a.cfg.MachineClients) > 0 && !containsFold(a.cfg.MachineClients, clientID) {
+		return Principal{}, errNotAllowed
+	}
+	if len(a.cfg.MachineScopes) > 0 && !scopeContainsAll(claimScope(claims), a.cfg.MachineScopes) {
+		return Principal{}, errNotAllowed
+	}
+	name := clientID
+	if name == "" {
+		name = subject
+	}
+	provider := claimString(claims, "iss")
+	if provider == "" {
+		provider = "oauth2"
+	}
+	return Principal{
+		Subject:  "client:" + subject,
+		Name:     name,
+		Provider: provider,
+		Method:   "client_credentials",
+	}, nil
 }
 
 // HandleLogin starts the authorization code flow with PKCE.
@@ -762,13 +1074,14 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	stateTTLValue := a.stateTTLValue()
 	state := authState{
 		State:       stateToken,
 		Verifier:    verifier,
 		Nonce:       nonce,
 		Redirect:    a.safeRedirect(r, r.URL.Query().Get("redirect")),
 		RedirectURI: a.redirectURL(r),
-		ExpiresAt:   time.Now().Add(stateTTL).Unix(),
+		ExpiresAt:   time.Now().Add(stateTTLValue).Unix(),
 	}
 	if r.URL.Query().Get("format") == "json" || strings.Contains(r.Header.Get("Accept"), "application/json") {
 		state.Mode = "json"
@@ -778,7 +1091,8 @@ func (a *AuthManager) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to start login"})
 		return
 	}
-	http.SetCookie(w, a.stateCookie(encodedState, int(stateTTL.Seconds())))
+	a.warnIfStateCookieWillBeDropped(r)
+	http.SetCookie(w, a.stateCookie(encodedState, int(stateTTLValue.Seconds())))
 
 	query := url.Values{}
 	query.Set("response_type", "code")
@@ -843,13 +1157,21 @@ func (a *AuthManager) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	cookie, err := r.Cookie(stateCookieName)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "login state is missing or expired"})
+		a.logMissingStateCookie(r)
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "login state is missing or expired",
+			"hint":  "the browser did not send the OAuth state cookie back to the callback. Start the login flow on the same https hostname that receives the callback, keep SESSION_COOKIE_SECURE in sync with the scheme, and allow at least OAUTH_STATE_TTL (default 10m) to complete the provider consent screen",
+		})
 		return
 	}
 	a.clearCookie(w, a.stateCookie("", 0))
 	state, err := decodeAuthState(cookie.Value, a.cfg.SessionSecret, time.Now())
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "login state is invalid or expired"})
+		log.Printf("archview auth: rejected oauth state cookie: %v", err)
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "login state is invalid or expired",
+			"hint":  "the state cookie signature did not verify; every replica must share the same SESSION_SECRET and the login must finish within OAUTH_STATE_TTL",
+		})
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(state.State), []byte(stateParam)) != 1 {
@@ -958,6 +1280,15 @@ func (a *AuthManager) HandleConfig(w http.ResponseWriter, r *http.Request) {
 	info := a.PublicInfo()
 	if a.cfg.IssuerURL != "" {
 		info["issuer"] = a.cfg.IssuerURL
+	}
+	if machine, ok := info["machine"].(map[string]any); ok {
+		if _, configured := machine["tokenUrl"]; !configured {
+			// Best effort: expose the discovered token endpoint so machine
+			// clients know where to request a client-credentials token.
+			if md, err := a.provider(r.Context()); err == nil && md.TokenEndpoint != "" {
+				machine["tokenUrl"] = md.TokenEndpoint
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, info)
 }
@@ -1177,29 +1508,7 @@ func (a *AuthManager) authenticate(r *http.Request) (Principal, error) {
 		if token == "" {
 			return Principal{}, errNotAuthenticated
 		}
-		if key, ok := a.matchAPIKey(token); ok {
-			return Principal{
-				Subject:  "api-key:" + key.label,
-				Name:     key.label,
-				Provider: "api-key",
-				Method:   "api_key",
-			}, nil
-		}
-		if a.cfg.Mode == authModeNone {
-			return Principal{}, errNotAuthenticated
-		}
-		claims, err := a.verifyBearer(r.Context(), token)
-		if err != nil {
-			return Principal{}, err
-		}
-		principal := a.principalFromClaims(claims, "bearer", "bearer")
-		if principal.Subject == "" {
-			return Principal{}, errInvalidToken
-		}
-		if err := a.checkAllowed(principal); err != nil {
-			return Principal{}, err
-		}
-		return principal, nil
+		return a.principalFromBearer(r.Context(), token)
 	}
 
 	cookie, err := r.Cookie(a.cfg.CookieName)
@@ -1217,6 +1526,182 @@ func (a *AuthManager) authenticate(r *http.Request) (Principal, error) {
 	return principal, nil
 }
 
+// principalFromBearer validates an OAuth 2.0 access token. Signed JWTs are
+// verified locally against the provider JWKS; opaque tokens are introspected
+// when OAUTH_INTROSPECTION_URL is configured. Client-credentials tokens are
+// machine callers and use their own allowlists.
+func (a *AuthManager) principalFromBearer(ctx context.Context, token string) (Principal, error) {
+	if a.cfg.Mode == authModeNone {
+		return Principal{}, errNotAuthenticated
+	}
+
+	var (
+		claims map[string]any
+		err    error
+	)
+	switch {
+	case looksLikeJWT(token):
+		claims, err = a.verifyBearer(ctx, token)
+	case a.cfg.IntrospectionURL != "":
+		claims, err = a.introspect(ctx, token)
+	default:
+		return Principal{}, fmt.Errorf("%w: token is not a JWT and OAUTH_INTROSPECTION_URL is not configured", errInvalidToken)
+	}
+	if err != nil {
+		return Principal{}, err
+	}
+
+	machine := a.isMachineToken(claims)
+	if err := a.checkAudience(claims, machine); err != nil {
+		return Principal{}, err
+	}
+	if machine {
+		return a.principalFromMachineClaims(claims)
+	}
+
+	principal := a.principalFromClaims(claims, "bearer", "bearer")
+	if principal.Subject == "" {
+		return Principal{}, errInvalidToken
+	}
+	if err := a.checkAllowed(principal); err != nil {
+		return Principal{}, err
+	}
+	return principal, nil
+}
+
+// introspect validates an opaque access token with RFC 7662 token introspection
+// (or a GET style endpoint such as Google's tokeninfo) and converts the response
+// into the claim map used by the rest of the authenticator.
+func (a *AuthManager) introspect(ctx context.Context, token string) (map[string]any, error) {
+	endpoint, err := url.Parse(a.cfg.IntrospectionURL)
+	if err != nil {
+		return nil, fmt.Errorf("introspection: %w", err)
+	}
+
+	values := url.Values{}
+	values.Set("token", token)
+	values.Set("token_type_hint", "access_token")
+	if a.cfg.IntrospectionAuthMethod == "client_secret_post" {
+		values.Set("client_id", a.cfg.ClientID)
+		values.Set("client_secret", a.cfg.ClientSecret)
+	}
+
+	method := http.MethodPost
+	var body io.Reader
+	query := endpoint.Query()
+	if a.cfg.IntrospectionMethod == http.MethodGet {
+		method = http.MethodGet
+		query.Set("access_token", token)
+	} else {
+		body = strings.NewReader(values.Encode())
+	}
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
+	if err != nil {
+		return nil, err
+	}
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", requestUserAgent)
+	if a.cfg.IntrospectionAuthMethod == "client_secret_basic" {
+		req.SetBasicAuth(url.QueryEscape(a.cfg.ClientID), url.QueryEscape(a.cfg.ClientSecret))
+	}
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("introspection request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponse))
+	if err != nil {
+		return nil, fmt.Errorf("introspection request failed: %w", err)
+	}
+
+	var introspection introspectionResponse
+	if err := json.Unmarshal(payload, &introspection); err != nil {
+		return nil, fmt.Errorf("introspection returned status %d with an unreadable body", resp.StatusCode)
+	}
+	if introspection.Error != "" {
+		return nil, fmt.Errorf("%w: introspection rejected the token (%s)", errInvalidToken, introspection.Error)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("introspection returned status %d", resp.StatusCode)
+	}
+	if introspection.Active != nil && !*introspection.Active {
+		return nil, fmt.Errorf("%w: token is not active", errInvalidToken)
+	}
+	return introspection.claims(time.Now())
+}
+
+// claims converts an introspection response into JWT-style claims.
+func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
+	expiresAt := r.Exp
+	if expiresAt == 0 && r.ExpiresIn > 0 {
+		expiresAt = now.Add(time.Duration(r.ExpiresIn) * time.Second).Unix()
+	}
+	if expiresAt == 0 {
+		return nil, fmt.Errorf("%w: introspection response has no expiry", errInvalidToken)
+	}
+	if now.After(time.Unix(expiresAt, 0).Add(jwtClockSkew)) {
+		return nil, fmt.Errorf("%w: token expired", errInvalidToken)
+	}
+	if r.Nbf != 0 && now.Add(jwtClockSkew).Before(time.Unix(r.Nbf, 0)) {
+		return nil, fmt.Errorf("%w: token not valid yet", errInvalidToken)
+	}
+
+	claims := map[string]any{
+		"exp":        expiresAt,
+		"sub":        r.Sub,
+		"client_id":  r.ClientID,
+		"iss":        r.Iss,
+		"scope":      r.Scope,
+		"token_type": r.TokenType,
+		"grant_type": r.GrantType,
+		"username":   r.Username,
+	}
+	if r.Azp != "" {
+		claims["azp"] = r.Azp
+	}
+	if r.Email != "" {
+		claims["email"] = r.Email
+	}
+	if r.Iat != 0 {
+		claims["iat"] = r.Iat
+	}
+	if r.Nbf != 0 {
+		claims["nbf"] = r.Nbf
+	}
+	if len(r.Aud) > 0 {
+		var aud any
+		if err := json.Unmarshal(r.Aud, &aud); err == nil {
+			claims["aud"] = aud
+		}
+	}
+	if r.Scope == "" && len(r.Scp) > 0 {
+		var scp any
+		if err := json.Unmarshal(r.Scp, &scp); err == nil {
+			switch typed := scp.(type) {
+			case string:
+				claims["scope"] = typed
+			case []any:
+				scopes := make([]string, 0, len(typed))
+				for _, item := range typed {
+					if s, ok := item.(string); ok {
+						scopes = append(scopes, s)
+					}
+				}
+				claims["scope"] = strings.Join(scopes, " ")
+			}
+		}
+	}
+	return claims, nil
+}
+
+// audience is checked separately because machine tokens may use a different
+// audience set than human tokens.
 func (a *AuthManager) verifyBearer(ctx context.Context, token string) (map[string]any, error) {
 	a.mu.Lock()
 	keys := a.jwks
@@ -1239,8 +1724,7 @@ func (a *AuthManager) verifyBearer(ctx context.Context, token string) (map[strin
 		return nil, errors.New("jwks is not configured")
 	}
 	return verifyJWT(ctx, token, keys, jwtVerifyOptions{
-		Issuer:    issuer,
-		Audiences: a.audiences,
+		Issuer: issuer,
 	})
 }
 
@@ -1266,6 +1750,10 @@ func (a *AuthManager) Middleware(next http.Handler) http.Handler {
 		}
 		principal, err := a.authenticate(r)
 		if err != nil {
+			if r.Header.Get("Authorization") != "" {
+				// Only log rejected credentials, never the credential itself.
+				log.Printf("archview auth: rejected bearer credential: %v", err)
+			}
 			response := map[string]any{
 				"error":   "unauthorized",
 				"message": "authentication required",
