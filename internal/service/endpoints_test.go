@@ -134,7 +134,7 @@ func TestRequestBaseURL(t *testing.T) {
 func TestEndpointLinks(t *testing.T) {
 	links := endpointLinks("https://archview.example")
 	want := map[string]string{
-		"architecture": "https://archview.example/api/architecture?project=<name>",
+		"architecture": "https://archview.example/api/architecture",
 		"docker":       "https://archview.example/api/docker",
 		"system":       "https://archview.example/api/system",
 		"healthz":      "https://archview.example/healthz",
@@ -216,7 +216,7 @@ func TestArchitectureResponsesIncludeEndpoints(t *testing.T) {
 				}
 				if link.Name == "architecture" {
 					found = true
-					if want := "https://archview.example/api/architecture?project=<name>"; link.URL != want {
+					if want := "https://archview.example/api/architecture"; link.URL != want {
 						t.Fatalf("architecture URL = %q, want %q", link.URL, want)
 					}
 				}

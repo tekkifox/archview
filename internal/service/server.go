@@ -339,7 +339,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			"/healthz",
 			"/readyz",
 			"/docs",
-			"/api/architecture?project=<name>",
+			"/api/architecture",
 			"/api/docker",
 			"/api/system",
 		},
@@ -425,7 +425,7 @@ func endpointLinks(baseURL string) []EndpointLink {
 		return nil
 	}
 	return []EndpointLink{
-		{Name: "architecture", URL: baseURL + "/api/architecture?project=<name>"},
+		{Name: "architecture", URL: baseURL + "/api/architecture"},
 		{Name: "docker", URL: baseURL + "/api/docker"},
 		{Name: "system", URL: baseURL + "/api/system"},
 		{Name: "healthz", URL: baseURL + "/healthz"},

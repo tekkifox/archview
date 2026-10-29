@@ -340,7 +340,7 @@ components:
         url:
           type: string
           format: uri
-          description: Absolute URL. The architecture entry uses `project=<name>` as a placeholder.
+          description: Absolute URL. The architecture entry is advertised without a query string; callers still supply `project` when invoking the route.
       required: [name, url]
     DockerSnapshot:
       type: object
