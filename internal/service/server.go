@@ -458,8 +458,39 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	resp.Endpoints = s.endpointLinks(r)
+	s.attachEndpoints(&resp, r)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// attachEndpoints records the endpoint links on resp and repeats them at the
+// end of the diagram. Both representations are produced from the same slice so
+// they cannot drift.
+func (s *Server) attachEndpoints(resp *OverviewResponse, r *http.Request) {
+	links := s.endpointLinks(r)
+	resp.Endpoints = links
+	resp.Diagram = appendEndpointsBlock(resp.Diagram, links)
+}
+
+// appendEndpointsBlock appends the endpoint list to a diagram, matching its
+// bullet style. The diagram is returned unchanged when there are no links.
+func appendEndpointsBlock(diagram string, links []EndpointLink) string {
+	if len(links) == 0 {
+		return diagram
+	}
+	var b strings.Builder
+	b.WriteString(diagram)
+	if diagram != "" && !strings.HasSuffix(diagram, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\nendpoints\n")
+	for _, link := range links {
+		b.WriteString("  - ")
+		b.WriteString(link.Name)
+		b.WriteString(": ")
+		b.WriteString(link.URL)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // endpointLinks lists the API endpoints for the instance that served r. URLs
@@ -601,7 +632,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 					writeError(w, err)
 					return
 				}
-				resp.Endpoints = s.endpointLinks(r)
+				s.attachEndpoints(&resp, r)
 				m, err := attachTelemetryToOverview(resp)
 				if err != nil {
 					writeJSON(w, http.StatusOK, resp)
@@ -619,7 +650,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	resp.Endpoints = s.endpointLinks(r)
+	s.attachEndpoints(&resp, r)
 	m, err := attachTelemetryToOverview(resp)
 	if err != nil {
 		writeJSON(w, http.StatusOK, resp)
