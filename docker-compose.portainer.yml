@@ -24,12 +24,18 @@ services:
   archview:
     image: ghcr.io/tekkifox/archview:latest
     pull_policy: always
+    hostname: archview
     env_file:
       - stack.env
     environment:
       PORT: "8083"
+      # Terminates TLS for archview.rossmoney.me; keep in sync with the stack.env
+      # OAuth redirect URL so logins are built against the public https origin.
+      TRUST_PROXY_HEADERS: "true"
     networks:
       archview-stack:
+      # openresty reverse proxy (external stack) forwards archview.rossmoney.me
+      # to 172.18.0.10:8083.
       proxy:
         ipv4_address: 172.18.0.10
     depends_on:
@@ -39,6 +45,13 @@ services:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/host/root:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
   archview-stack:
