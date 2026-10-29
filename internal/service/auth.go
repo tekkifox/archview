@@ -272,6 +272,17 @@ func NewAuthManager(cfg AuthConfig) (*AuthManager, error) {
 	if len(manager.audiences) == 0 && cfg.Mode != authModeNone {
 		manager.audiences = []string{cfg.ClientID}
 	}
+
+	if cfg.Mode != authModeNone {
+		log.Printf("archview auth: requesting oauth scopes: %s", strings.Join(manager.scopes, " "))
+		for _, scope := range manager.scopes {
+			// Catches the two most common env mistakes: an email address pasted
+			// into OAUTH_SCOPES, and two variables merged onto one line.
+			if strings.ContainsAny(scope, "@=") {
+				log.Printf("archview auth: WARNING: OAUTH_SCOPES entry %q does not look like a scope; put address allowlists in OAUTH_ALLOWED_EMAILS and keep each variable on its own line", scope)
+			}
+		}
+	}
 	return manager, nil
 }
 
