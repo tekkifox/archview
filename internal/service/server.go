@@ -416,62 +416,37 @@ func (s *Server) swaggerSpec(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	resp, err := s.buildOverview(r.Context())
+	baseURL := s.requestBaseURL(r)
+	resp, err := s.buildOverview(r.Context(), baseURL)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	s.attachEndpoints(&resp, r)
+	attachEndpoints(&resp, baseURL)
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// attachEndpoints records the endpoint links on resp and repeats them at the
-// end of the diagram. Both representations are produced from the same slice so
-// they cannot drift.
-func (s *Server) attachEndpoints(resp *OverviewResponse, r *http.Request) {
-	links := s.endpointLinks(r)
-	resp.Endpoints = links
-	resp.Diagram = appendEndpointsBlock(resp.Diagram, links)
+// attachEndpoints records the endpoint links on resp. The full list lives here;
+// the diagram only carries the API base URL inline against its API hop.
+func attachEndpoints(resp *OverviewResponse, baseURL string) {
+	resp.Endpoints = endpointLinks(baseURL)
 }
 
-// appendEndpointsBlock appends the endpoint list to a diagram, matching its
-// bullet style. The diagram is returned unchanged when there are no links.
-func appendEndpointsBlock(diagram string, links []EndpointLink) string {
-	if len(links) == 0 {
-		return diagram
-	}
-	var b strings.Builder
-	b.WriteString(diagram)
-	if diagram != "" && !strings.HasSuffix(diagram, "\n") {
-		b.WriteString("\n")
-	}
-	b.WriteString("\nendpoints\n")
-	for _, link := range links {
-		b.WriteString("  - ")
-		b.WriteString(link.Name)
-		b.WriteString(": ")
-		b.WriteString(link.URL)
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-// endpointLinks lists the API endpoints for the instance that served r. URLs
-// are absolute so a consumer can follow them without knowing how it reached
+// endpointLinks lists the API endpoints for the instance at baseURL. URLs are
+// absolute so a consumer can follow them without knowing how it reached
 // ArchView.
-func (s *Server) endpointLinks(r *http.Request) []EndpointLink {
-	base := s.requestBaseURL(r)
-	if base == "" {
+func endpointLinks(baseURL string) []EndpointLink {
+	if baseURL == "" {
 		return nil
 	}
 	return []EndpointLink{
-		{Name: "overview", URL: base + "/api/overview"},
-		{Name: "architecture", URL: base + "/api/architecture?project=<name>"},
-		{Name: "docker", URL: base + "/api/docker"},
-		{Name: "system", URL: base + "/api/system"},
-		{Name: "healthz", URL: base + "/healthz"},
-		{Name: "readyz", URL: base + "/readyz"},
-		{Name: "docs", URL: base + "/docs"},
+		{Name: "overview", URL: baseURL + "/api/overview"},
+		{Name: "architecture", URL: baseURL + "/api/architecture?project=<name>"},
+		{Name: "docker", URL: baseURL + "/api/docker"},
+		{Name: "system", URL: baseURL + "/api/system"},
+		{Name: "healthz", URL: baseURL + "/healthz"},
+		{Name: "readyz", URL: baseURL + "/readyz"},
+		{Name: "docs", URL: baseURL + "/docs"},
 	}
 }
 
@@ -581,6 +556,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 
 	// Normalize common aliases
 	project = normalizeProject(project)
+	baseURL := s.requestBaseURL(r)
 
 	// Determine whether this project should return a full Docker snapshot.
 	// Controlled via env FULL_DOCKER_PROJECTS: a comma-separated list of
@@ -590,12 +566,12 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 		for _, p := range strings.Split(fullProjectsEnv, ",") {
 			if strings.TrimSpace(p) == project {
 				// return full overview for this project
-				resp, err := s.buildOverview(r.Context())
+				resp, err := s.buildOverview(r.Context(), baseURL)
 				if err != nil {
 					writeError(w, err)
 					return
 				}
-				s.attachEndpoints(&resp, r)
+				attachEndpoints(&resp, baseURL)
 				m, err := attachTelemetryToOverview(resp)
 				if err != nil {
 					writeJSON(w, http.StatusOK, resp)
@@ -608,12 +584,12 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Otherwise return project-scoped overview
-	resp, err := s.buildProjectOverview(r.Context(), project)
+	resp, err := s.buildProjectOverview(r.Context(), project, baseURL)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	s.attachEndpoints(&resp, r)
+	attachEndpoints(&resp, baseURL)
 	m, err := attachTelemetryToOverview(resp)
 	if err != nil {
 		writeJSON(w, http.StatusOK, resp)
@@ -653,7 +629,7 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, system)
 }
 
-func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
+func (s *Server) buildOverview(ctx context.Context, baseURL string) (OverviewResponse, error) {
 	docker, err := s.collectDockerAll(ctx)
 	if err != nil {
 		return OverviewResponse{}, err
@@ -696,7 +672,7 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 	}
 
 	regions := []string{"host", system.OS, docker.Daemon.Architecture}
-	diagram := buildDiagram(system, docker)
+	diagram := buildDiagram(system, docker, baseURL)
 
 	return OverviewResponse{
 		Title:       "Docker + Linux host overview",
@@ -719,7 +695,7 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 	}, nil
 }
 
-func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) (OverviewResponse, error) {
+func (s *Server) buildProjectOverview(ctx context.Context, projectLabel, baseURL string) (OverviewResponse, error) {
 	docker, err := s.collectDockerForProject(ctx, projectLabel)
 	if err != nil {
 		return OverviewResponse{}, err
@@ -762,7 +738,7 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) 
 	}
 
 	regions := []string{projectLabel, system.OS, docker.Daemon.Architecture}
-	diagram := buildDiagram(system, docker)
+	diagram := buildDiagram(system, docker, baseURL)
 
 	return OverviewResponse{
 		Title:       "Docker + Linux host overview",
@@ -1235,7 +1211,7 @@ func isAnonymousImage(image dockerImage) bool {
 	return allAnonymous
 }
 
-func buildDiagram(system SystemSnapshot, docker DockerSnapshot) string {
+func buildDiagram(system SystemSnapshot, docker DockerSnapshot, baseURL string) string {
 	var b strings.Builder
 	b.WriteString("host linux system\n")
 	b.WriteString("  -> docker daemon\n")
@@ -1250,7 +1226,36 @@ func buildDiagram(system SystemSnapshot, docker DockerSnapshot) string {
 			b.WriteString(")\n")
 		}
 	}
-	return b.String()
+	return annotateAPIStep(b.String(), baseURL)
+}
+
+// annotateAPIStep adds the instance's API base URL in brackets to the diagram
+// step for /api/architecture, matching the diagram's text style. Variants with
+// no such step are returned unchanged; no node is invented. The URL comes from
+// the same requestBaseURL derivation as endpointLinks.
+func annotateAPIStep(diagram, baseURL string) string {
+	if baseURL == "" || !strings.Contains(diagram, "/api/architecture") {
+		return diagram
+	}
+	apiURL := strings.TrimRight(baseURL, "/") + "/api"
+	lines := strings.Split(diagram, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, "/api/architecture") {
+			continue
+		}
+		if strings.Contains(line, "("+apiURL+")") {
+			break
+		}
+		cr := ""
+		if strings.HasSuffix(line, "\r") {
+			line = strings.TrimSuffix(line, "\r")
+			cr = "\r"
+		}
+		line = strings.TrimRight(line, " \t")
+		lines[i] = line + " (" + apiURL + ")" + cr
+		break
+	}
+	return strings.Join(lines, "\n")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

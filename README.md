@@ -58,8 +58,9 @@ discover the rest of the API:
 
 The URLs follow the request's scheme and host. `X-Forwarded-Proto` and
 `X-Forwarded-Host` are honoured only when `TRUST_PROXY_HEADERS=true`, which is
-the same rule used for login redirects and cookies. The `diagram` string
-repeats the same links in text form as an `endpoints` section at its end.
+the same rule used for login redirects and cookies. The `diagram` string shows
+the instance's `/api` base URL inline against the API hop (when the topology has
+one); the full endpoint list stays in the `endpoints` array.
 
 ## Response shape
 

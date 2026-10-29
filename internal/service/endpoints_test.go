@@ -132,10 +132,7 @@ func TestRequestBaseURL(t *testing.T) {
 }
 
 func TestEndpointLinks(t *testing.T) {
-	server := &Server{}
-	request := httptest.NewRequest(http.MethodGet, "https://archview.example/api/architecture?project=demo", nil)
-
-	links := server.endpointLinks(request)
+	links := endpointLinks("https://archview.example")
 	want := map[string]string{
 		"overview":     "https://archview.example/api/overview",
 		"architecture": "https://archview.example/api/architecture?project=<name>",
@@ -227,17 +224,40 @@ func TestOverviewResponsesIncludeEndpoints(t *testing.T) {
 				t.Fatalf("architecture endpoint missing from %+v", response.Endpoints)
 			}
 
-			var block strings.Builder
-			block.WriteString("\nendpoints\n")
-			for _, link := range response.Endpoints {
-				block.WriteString("  - " + link.Name + ": " + link.URL + "\n")
-			}
-			if !strings.HasSuffix(response.Diagram, block.String()) {
-				t.Fatalf("diagram does not end with the endpoints block:\n%s", response.Diagram)
+			if strings.Contains(response.Diagram, "\nendpoints\n") {
+				t.Fatalf("diagram still contains the endpoints block:\n%s", response.Diagram)
 			}
 			if !strings.Contains(response.Diagram, "host linux system") {
 				t.Fatalf("diagram lost its topology text:\n%s", response.Diagram)
 			}
 		})
+	}
+}
+
+func TestDiagramAnnotatesAPIStep(t *testing.T) {
+	diagram := "client\n" +
+		"  -> portfolio site\n" +
+		"     -> /api/architecture\n" +
+		"        -> host Go service\n"
+
+	got := annotateAPIStep(diagram, "https://archview.example")
+
+	want := "client\n" +
+		"  -> portfolio site\n" +
+		"     -> /api/architecture (https://archview.example/api)\n" +
+		"        -> host Go service\n"
+	if got != want {
+		t.Fatalf("annotateAPIStep() = %q, want %q", got, want)
+	}
+}
+
+func TestDiagramWithoutAPIStepIsUnchanged(t *testing.T) {
+	diagram := "host linux system\n  -> docker daemon\n"
+
+	if got := annotateAPIStep(diagram, "https://archview.example"); got != diagram {
+		t.Fatalf("annotateAPIStep() changed a diagram without an API step: %q", got)
+	}
+	if got := annotateAPIStep(diagram, ""); got != diagram {
+		t.Fatalf("annotateAPIStep() changed a diagram without a base URL: %q", got)
 	}
 }
