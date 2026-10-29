@@ -508,7 +508,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 func normalizeProject(project string) string {
 	switch project {
 	case "travelling", "image-mosaic", "photoprism":
-		return "image-mosaic"
+		return "travelling"
 	case "rossmoney", "rossmoney-me", "rossmoney_me":
 		return "rossmoney_me"
 	default:
