@@ -37,8 +37,11 @@ jobs:
     env:
       # Support multiple Portainer webhook URLs. Set either PORTAINER_WEBHOOK_URL (single)
       # or PORTAINER_WEBHOOK_URLS (comma- or newline-separated) in repository secrets.
+      # The DEV_* pair is used for pushes to the dev branch instead.
       PORTAINER_WEBHOOK_URLS: ${{ secrets.PORTAINER_WEBHOOK_URLS }}
       PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+      PORTAINER_DEV_WEBHOOK_URLS: ${{ secrets.PORTAINER_DEV_WEBHOOK_URLS }}
+      PORTAINER_DEV_WEBHOOK_URL: ${{ secrets.PORTAINER_DEV_WEBHOOK_URL }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -81,10 +84,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Trigger Portainer webhook(s)
-        if: github.ref == 'refs/heads/main'
         run: |
           set -eu
-          urls_raw="${PORTAINER_WEBHOOK_URLS:-} ${PORTAINER_WEBHOOK_URL:-}"
+          # main redeploys the production stack, dev redeploys the dev stack;
+          # any other ref triggers neither.
+          case "${GITHUB_REF_NAME:-}" in
+            main) urls_raw="${PORTAINER_WEBHOOK_URLS:-} ${PORTAINER_WEBHOOK_URL:-}" ;;
+            dev) urls_raw="${PORTAINER_DEV_WEBHOOK_URLS:-} ${PORTAINER_DEV_WEBHOOK_URL:-}" ;;
+            *) urls_raw="" ;;
+          esac
           failures=0
           echo "Triggering Portainer webhooks..."
           echo "$urls_raw" | tr ',' '\n' | while read -r url; do
