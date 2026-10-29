@@ -336,6 +336,7 @@ components:
             type: string
         diagram:
           type: string
+          description: Topology text; it ends with an `endpoints` section that repeats the same absolute URLs as the `endpoints` array.
         docker:
           $ref: '#/components/schemas/DockerSnapshot'
         system:
