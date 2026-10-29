@@ -7,6 +7,23 @@ import (
 	"time"
 )
 
+func TestNormalizeProjectAliases(t *testing.T) {
+	cases := map[string]string{
+		"travelling":   "travelling",
+		"image-mosaic": "travelling",
+		"photoprism":   "travelling",
+		"rossmoney":    "rossmoney_me",
+		"rossmoney-me": "rossmoney_me",
+		"rossmoney_me": "rossmoney_me",
+		"other":        "other",
+	}
+	for input, want := range cases {
+		if got := normalizeProject(input); got != want {
+			t.Errorf("normalizeProject(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestCORSOnlyAllowsConfiguredOrigins(t *testing.T) {
 	handler := newAuthServer(t, AuthConfig{Mode: authModeNone}, []string{"https://app.example"})
 
