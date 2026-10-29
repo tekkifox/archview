@@ -133,21 +133,6 @@ paths:
                     $ref: '#/components/schemas/Principal'
         '401':
           $ref: '#/components/responses/Unauthorized'
-  /api/overview:
-    get:
-      summary: Host overview
-      security:
-        - bearerAuth: []
-        - cookieAuth: []
-      responses:
-        '200':
-          description: Live host overview
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OverviewResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
   /api/architecture:
     get:
       summary: Architecture overview
@@ -334,9 +319,6 @@ components:
           type: array
           items:
             type: string
-        diagram:
-          type: string
-          description: Topology text. The API hop is annotated inline with the instance's `/api` base URL when the topology has one; the full endpoint list is in the `endpoints` array.
         docker:
           $ref: '#/components/schemas/DockerSnapshot'
         system:

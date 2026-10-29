@@ -119,7 +119,7 @@ func TestRequestBaseURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := &Server{cfg: Config{Auth: AuthConfig{TrustProxyHeaders: tt.trust}}}
-			request := httptest.NewRequest(http.MethodGet, tt.scheme+"://"+tt.host+"/api/overview", nil)
+			request := httptest.NewRequest(http.MethodGet, tt.scheme+"://"+tt.host+"/api/architecture", nil)
 			for name, value := range tt.headers {
 				request.Header.Set(name, value)
 			}
@@ -134,7 +134,6 @@ func TestRequestBaseURL(t *testing.T) {
 func TestEndpointLinks(t *testing.T) {
 	links := endpointLinks("https://archview.example")
 	want := map[string]string{
-		"overview":     "https://archview.example/api/overview",
 		"architecture": "https://archview.example/api/architecture?project=<name>",
 		"docker":       "https://archview.example/api/docker",
 		"system":       "https://archview.example/api/system",
@@ -156,7 +155,7 @@ func TestEndpointLinks(t *testing.T) {
 	}
 }
 
-func TestOverviewResponsesIncludeEndpoints(t *testing.T) {
+func TestArchitectureResponsesIncludeEndpoints(t *testing.T) {
 	docker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -186,7 +185,6 @@ func TestOverviewResponsesIncludeEndpoints(t *testing.T) {
 		target  string
 		fullFor string
 	}{
-		{name: "overview", target: "/api/overview"},
 		{name: "architecture project", target: "/api/architecture?project=demo"},
 		{name: "architecture full docker project", target: "/api/architecture?project=demo", fullFor: "demo"},
 	}
@@ -213,6 +211,9 @@ func TestOverviewResponsesIncludeEndpoints(t *testing.T) {
 
 			found := false
 			for _, link := range response.Endpoints {
+				if link.Name == "overview" {
+					t.Fatalf("overview endpoint should be removed: %+v", response.Endpoints)
+				}
 				if link.Name == "architecture" {
 					found = true
 					if want := "https://archview.example/api/architecture?project=<name>"; link.URL != want {
@@ -223,41 +224,22 @@ func TestOverviewResponsesIncludeEndpoints(t *testing.T) {
 			if !found {
 				t.Fatalf("architecture endpoint missing from %+v", response.Endpoints)
 			}
-
-			if strings.Contains(response.Diagram, "\nendpoints\n") {
-				t.Fatalf("diagram still contains the endpoints block:\n%s", response.Diagram)
-			}
-			if !strings.Contains(response.Diagram, "host linux system") {
-				t.Fatalf("diagram lost its topology text:\n%s", response.Diagram)
-			}
 		})
 	}
 }
 
-func TestDiagramAnnotatesAPIStep(t *testing.T) {
-	diagram := "client\n" +
-		"  -> portfolio site\n" +
-		"     -> /api/architecture\n" +
-		"        -> host Go service\n"
-
-	got := annotateAPIStep(diagram, "https://archview.example")
-
-	want := "client\n" +
-		"  -> portfolio site\n" +
-		"     -> /api/architecture (https://archview.example/api)\n" +
-		"        -> host Go service\n"
-	if got != want {
-		t.Fatalf("annotateAPIStep() = %q, want %q", got, want)
+func TestOverviewRouteRemoved(t *testing.T) {
+	server, err := NewServer(Config{Auth: AuthConfig{Mode: authModeNone}})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
 	}
-}
+	handler := server.Routes()
 
-func TestDiagramWithoutAPIStepIsUnchanged(t *testing.T) {
-	diagram := "host linux system\n  -> docker daemon\n"
+	request := httptest.NewRequest(http.MethodGet, "https://archview.example/api/overview", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
 
-	if got := annotateAPIStep(diagram, "https://archview.example"); got != diagram {
-		t.Fatalf("annotateAPIStep() changed a diagram without an API step: %q", got)
-	}
-	if got := annotateAPIStep(diagram, ""); got != diagram {
-		t.Fatalf("annotateAPIStep() changed a diagram without a base URL: %q", got)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/overview status = %d, want 404 (body %s)", recorder.Code, recorder.Body.String())
 	}
 }
