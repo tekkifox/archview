@@ -36,12 +36,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Support multiple Portainer webhook URLs. Set either PORTAINER_WEBHOOK_URL (single)
-      # or PORTAINER_WEBHOOK_URLS (comma- or newline-separated) in repository secrets.
+      # or PORTAINER_WEBHOOK_URLS (comma- or newline-separated) as an Actions *variable*;
+      # a repository secret of the same name is used as a fallback, so either works.
       # The DEV_* pair is used for pushes to the dev branch instead.
-      PORTAINER_WEBHOOK_URLS: ${{ secrets.PORTAINER_WEBHOOK_URLS }}
-      PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
-      PORTAINER_DEV_WEBHOOK_URLS: ${{ secrets.PORTAINER_DEV_WEBHOOK_URLS }}
-      PORTAINER_DEV_WEBHOOK_URL: ${{ secrets.PORTAINER_DEV_WEBHOOK_URL }}
+      PORTAINER_WEBHOOK_URLS: ${{ vars.PORTAINER_WEBHOOK_URLS || secrets.PORTAINER_WEBHOOK_URLS }}
+      PORTAINER_WEBHOOK_URL: ${{ vars.PORTAINER_WEBHOOK_URL || secrets.PORTAINER_WEBHOOK_URL }}
+      PORTAINER_DEV_WEBHOOK_URLS: ${{ vars.PORTAINER_DEV_WEBHOOK_URLS || secrets.PORTAINER_DEV_WEBHOOK_URLS }}
+      PORTAINER_DEV_WEBHOOK_URL: ${{ vars.PORTAINER_DEV_WEBHOOK_URL || secrets.PORTAINER_DEV_WEBHOOK_URL }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
