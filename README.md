@@ -61,6 +61,26 @@ The URLs follow the request's scheme and host. `X-Forwarded-Proto` and
 the same rule used for login redirects and cookies. The `diagram` string
 repeats the same links in text form as an `endpoints` section at its end.
 
+## Response shape
+
+Responses are deliberately limited to what the console needs. The API does not
+return host internals or anything that could carry a secret:
+
+- containers expose a 12-character ID, name, image, state, status and creation
+  time only — no ports, commands, labels or mount counts;
+- images expose repo tags, size, creation time and dangling state — no image
+  ID, architecture or OS;
+- the Docker daemon exposes its operating system, architecture, driver, CPU
+  count, memory total and container/image counts — no kernel, root directory,
+  server version or API version;
+- `system` exposes CPU count, load average, memory, process count, disk byte
+  totals and percentages, and network byte counters — no kernel, uptime,
+  architecture, mount points, filesystems or interface names;
+- `NodeSummary.details` only carries a container's `image` and `state`.
+
+`hostname` and `os` are kept deliberately so a dashboard can identify which host
+it is viewing. Telemetry derives the same safe values.
+
 ## Quick start
 
 ```bash

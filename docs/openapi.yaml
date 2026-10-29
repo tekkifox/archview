@@ -376,17 +376,9 @@ components:
     DockerDaemonSummary:
       type: object
       properties:
-        serverVersion:
-          type: string
-        apiVersion:
-          type: string
         operatingSystem:
           type: string
-        kernelVersion:
-          type: string
         architecture:
-          type: string
-        dockerRootDir:
           type: string
         driver:
           type: string
@@ -405,6 +397,7 @@ components:
       properties:
         id:
           type: string
+          description: Short container ID (first 12 characters).
         name:
           type: string
         image:
@@ -415,32 +408,9 @@ components:
           type: string
         created:
           type: integer
-        ports:
-          type: array
-          items:
-            $ref: '#/components/schemas/PortSummary'
-        labels:
-          type: object
-          additionalProperties:
-            type: string
-        command:
-          type: string
-    PortSummary:
-      type: object
-      properties:
-        privatePort:
-          type: integer
-        publicPort:
-          type: integer
-        type:
-          type: string
-        ip:
-          type: string
     ImageSummary:
       type: object
       properties:
-        id:
-          type: string
         repoTags:
           type: array
           items:
@@ -451,23 +421,15 @@ components:
           type: integer
         dangling:
           type: boolean
-        architecture:
-          type: string
-        os:
-          type: string
     SystemSnapshot:
       type: object
       properties:
         hostname:
           type: string
+          description: Kept deliberately so consumers can identify the host.
         os:
           type: string
-        kernel:
-          type: string
-        architecture:
-          type: string
-        uptimeSeconds:
-          type: number
+          description: Kept deliberately for host identification.
         cpuCount:
           type: integer
         loadAverage:
@@ -502,10 +464,6 @@ components:
     DiskSnapshot:
       type: object
       properties:
-        mountPoint:
-          type: string
-        filesystem:
-          type: string
         totalBytes:
           type: integer
         freeBytes:
@@ -517,8 +475,6 @@ components:
     NetworkSnapshot:
       type: object
       properties:
-        interface:
-          type: string
         receivedBytes:
           type: integer
         sentBytes:
@@ -536,14 +492,6 @@ components:
           type: string
         node:
           type: string
-        ports:
-          type: array
-          items:
-            $ref: '#/components/schemas/PortSummary'
-        labels:
-          type: object
-          additionalProperties:
-            type: string
     NodeSummary:
       type: object
       properties:
@@ -555,5 +503,6 @@ components:
           type: string
         details:
           type: object
+          description: Safe details only. Container nodes expose `image` and `state`; host nodes have no details.
           additionalProperties:
             type: string
