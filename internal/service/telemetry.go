@@ -49,7 +49,7 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		var diskTotalPtr *int64
 		var diskPct *float64
 		for _, d := range sys.Disks {
-			if d.MountPoint == "/" {
+			if d.mountPoint == "/" {
 				du := int64(d.UsedBytes)
 				dt := int64(d.TotalBytes)
 				diskUsedPtr = new(int64)
@@ -77,7 +77,6 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		host := map[string]any{
 			"name":        sys.Hostname,
 			"os":          sys.OS,
-			"kernel":      sys.Kernel,
 			"cpuCount":    sys.CPUCount,
 			"loadAverage": sys.LoadAverage,
 		}
