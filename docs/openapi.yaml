@@ -343,6 +343,22 @@ components:
         extra:
           type: object
           additionalProperties: true
+        endpoints:
+          type: array
+          description: Absolute URLs for the API endpoints of the instance that served the request.
+          items:
+            $ref: '#/components/schemas/EndpointLink'
+    EndpointLink:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Short endpoint name, for example `architecture`.
+        url:
+          type: string
+          format: uri
+          description: Absolute URL. The architecture entry uses `project=<name>` as a placeholder.
+      required: [name, url]
     DockerSnapshot:
       type: object
       properties:
