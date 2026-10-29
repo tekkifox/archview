@@ -336,7 +336,7 @@ components:
             type: string
         diagram:
           type: string
-          description: Topology text; it ends with an `endpoints` section that repeats the same absolute URLs as the `endpoints` array.
+          description: Topology text. The API hop is annotated inline with the instance's `/api` base URL when the topology has one; the full endpoint list is in the `endpoints` array.
         docker:
           $ref: '#/components/schemas/DockerSnapshot'
         system:
