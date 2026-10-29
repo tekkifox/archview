@@ -31,7 +31,7 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 | `GET /auth/callback` | public | OAuth callback; sets the session cookie |
 | `GET /auth/logout` | public | Clears the session cookie |
 | `GET /auth/user` | protected | Current principal |
-| `GET /api/architecture?project=<name>` | protected | Project-scoped overview with telemetry |
+| `GET /api/architecture` | protected | Project-scoped overview with telemetry |
 | `GET /api/docker` | protected | Docker daemon, container and image inventory |
 | `GET /api/system` | protected | Linux host metrics |
 
@@ -45,7 +45,7 @@ discover the rest of the API:
 
 ```json
 "endpoints": [
-  {"name": "architecture", "url": "https://archview.example.com/api/architecture?project=<name>"},
+  {"name": "architecture", "url": "https://archview.example.com/api/architecture"},
   {"name": "docker", "url": "https://archview.example.com/api/docker"},
   {"name": "system", "url": "https://archview.example.com/api/system"},
   {"name": "healthz", "url": "https://archview.example.com/healthz"},
