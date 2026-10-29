@@ -38,6 +38,8 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 
 Protected endpoints return `401` with a `WWW-Authenticate: Bearer` header when no valid credential is present.
 
+`FULL_DOCKER_PROJECTS` widens the `/api/architecture` response for selected projects. It is a comma-separated list of project labels — not newline-separated. Labels are matched after alias normalisation, so `travelling` and `photoprism` both arrive as `image-mosaic`; matching is case-sensitive and surrounding spaces around each entry are trimmed. When a project matches, the endpoint returns the **full host and Docker overview** (every container and image) instead of the project-scoped snapshot. When unset, every project stays scoped.
+
 ## Quick start
 
 ```bash
@@ -233,6 +235,7 @@ For Google specifically:
 | `HOST_ROOT` | `/host/root` | Mounted host root (for disk stats) |
 | `CORS_ALLOWED_ORIGINS` | — | Comma-separated exact origins; empty means same-origin only |
 | `TRUST_PROXY_HEADERS` | `false` | Honour `X-Forwarded-Proto`/`X-Forwarded-Host` |
+| `FULL_DOCKER_PROJECTS` | — | Comma-separated normalised project labels that receive the full host and Docker overview; matched case-sensitively after trimming; empty keeps every project scoped |
 
 ### Authentication
 

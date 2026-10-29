@@ -463,15 +463,11 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Normalize common aliases
-	switch project {
-	case "travelling", "image-mosaic":
-		project = "image-mosaic"
-	case "rossmoney", "rossmoney-me", "rossmoney_me":
-		project = "rossmoney_me"
-	}
+	project = normalizeProject(project)
 
-	// Determine whether this project should return a full Docker snapshot
-	// Controlled via env FULL_DOCKER_PROJECTS (comma or newline separated list of project labels)
+	// Determine whether this project should return a full Docker snapshot.
+	// Controlled via env FULL_DOCKER_PROJECTS: a comma-separated list of
+	// normalised project labels, matched case-sensitively after trimming.
 	fullProjectsEnv := os.Getenv("FULL_DOCKER_PROJECTS")
 	if fullProjectsEnv != "" {
 		for _, p := range strings.Split(fullProjectsEnv, ",") {
@@ -507,7 +503,18 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m)
 }
 
-// handleArchitecture is implemented later with normalized project handling.
+// normalizeProject maps the aliases accepted by /api/architecture onto the
+// canonical project label. Matching is exact and case-sensitive.
+func normalizeProject(project string) string {
+	switch project {
+	case "travelling", "image-mosaic", "photoprism":
+		return "image-mosaic"
+	case "rossmoney", "rossmoney-me", "rossmoney_me":
+		return "rossmoney_me"
+	default:
+		return project
+	}
+}
 
 func (s *Server) handleDocker(w http.ResponseWriter, r *http.Request) {
 	docker, err := s.collectDocker(r.Context())
