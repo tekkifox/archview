@@ -226,6 +226,18 @@ func TestOverviewResponsesIncludeEndpoints(t *testing.T) {
 			if !found {
 				t.Fatalf("architecture endpoint missing from %+v", response.Endpoints)
 			}
+
+			var block strings.Builder
+			block.WriteString("\nendpoints\n")
+			for _, link := range response.Endpoints {
+				block.WriteString("  - " + link.Name + ": " + link.URL + "\n")
+			}
+			if !strings.HasSuffix(response.Diagram, block.String()) {
+				t.Fatalf("diagram does not end with the endpoints block:\n%s", response.Diagram)
+			}
+			if !strings.Contains(response.Diagram, "host linux system") {
+				t.Fatalf("diagram lost its topology text:\n%s", response.Diagram)
+			}
 		})
 	}
 }
