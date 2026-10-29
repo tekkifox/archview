@@ -57,7 +57,6 @@ type OverviewResponse struct {
 	Services    []ServiceSummary `json:"services"`
 	Nodes       []NodeSummary    `json:"nodes"`
 	Regions     []string         `json:"regions"`
-	Diagram     string           `json:"diagram"`
 	Docker      DockerSnapshot   `json:"docker"`
 	System      SystemSnapshot   `json:"system"`
 	Extra       map[string]any   `json:"extra,omitempty"`
@@ -254,7 +253,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/auth/logout", s.auth.HandleLogout)
 	mux.HandleFunc("/auth/user", s.auth.HandleUser)
 	mux.HandleFunc("/auth/config", s.auth.HandleConfig)
-	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
 	mux.HandleFunc("/api/docker", s.handleDocker)
 	mux.HandleFunc("/api/system", s.handleSystem)
@@ -341,7 +339,6 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			"/healthz",
 			"/readyz",
 			"/docs",
-			"/api/overview",
 			"/api/architecture?project=<name>",
 			"/api/docker",
 			"/api/system",
@@ -415,19 +412,7 @@ func (s *Server) swaggerSpec(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(docs.OpenAPISpec)
 }
 
-func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	baseURL := s.requestBaseURL(r)
-	resp, err := s.buildOverview(r.Context(), baseURL)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	attachEndpoints(&resp, baseURL)
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// attachEndpoints records the endpoint links on resp. The full list lives here;
-// the diagram only carries the API base URL inline against its API hop.
+// attachEndpoints records the endpoint links on resp.
 func attachEndpoints(resp *OverviewResponse, baseURL string) {
 	resp.Endpoints = endpointLinks(baseURL)
 }
@@ -440,7 +425,6 @@ func endpointLinks(baseURL string) []EndpointLink {
 		return nil
 	}
 	return []EndpointLink{
-		{Name: "overview", URL: baseURL + "/api/overview"},
 		{Name: "architecture", URL: baseURL + "/api/architecture?project=<name>"},
 		{Name: "docker", URL: baseURL + "/api/docker"},
 		{Name: "system", URL: baseURL + "/api/system"},
@@ -566,7 +550,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 		for _, p := range strings.Split(fullProjectsEnv, ",") {
 			if strings.TrimSpace(p) == project {
 				// return full overview for this project
-				resp, err := s.buildOverview(r.Context(), baseURL)
+				resp, err := s.buildOverview(r.Context())
 				if err != nil {
 					writeError(w, err)
 					return
@@ -584,7 +568,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Otherwise return project-scoped overview
-	resp, err := s.buildProjectOverview(r.Context(), project, baseURL)
+	resp, err := s.buildProjectOverview(r.Context(), project)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -629,7 +613,7 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, system)
 }
 
-func (s *Server) buildOverview(ctx context.Context, baseURL string) (OverviewResponse, error) {
+func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 	docker, err := s.collectDockerAll(ctx)
 	if err != nil {
 		return OverviewResponse{}, err
@@ -672,7 +656,6 @@ func (s *Server) buildOverview(ctx context.Context, baseURL string) (OverviewRes
 	}
 
 	regions := []string{"host", system.OS, docker.Daemon.Architecture}
-	diagram := buildDiagram(system, docker, baseURL)
 
 	return OverviewResponse{
 		Title:       "Docker + Linux host overview",
@@ -685,7 +668,6 @@ func (s *Server) buildOverview(ctx context.Context, baseURL string) (OverviewRes
 		Services:    services,
 		Nodes:       nodes,
 		Regions:     regions,
-		Diagram:     diagram,
 		Docker:      docker,
 		System:      system,
 		Extra: map[string]any{
@@ -695,7 +677,7 @@ func (s *Server) buildOverview(ctx context.Context, baseURL string) (OverviewRes
 	}, nil
 }
 
-func (s *Server) buildProjectOverview(ctx context.Context, projectLabel, baseURL string) (OverviewResponse, error) {
+func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) (OverviewResponse, error) {
 	docker, err := s.collectDockerForProject(ctx, projectLabel)
 	if err != nil {
 		return OverviewResponse{}, err
@@ -738,7 +720,6 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel, baseURL
 	}
 
 	regions := []string{projectLabel, system.OS, docker.Daemon.Architecture}
-	diagram := buildDiagram(system, docker, baseURL)
 
 	return OverviewResponse{
 		Title:       "Docker + Linux host overview",
@@ -751,7 +732,6 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel, baseURL
 		Services:    services,
 		Nodes:       nodes,
 		Regions:     regions,
-		Diagram:     diagram,
 		Docker:      docker,
 		System:      system,
 		Extra: map[string]any{
@@ -1209,53 +1189,6 @@ func isAnonymousImage(image dockerImage) bool {
 		}
 	}
 	return allAnonymous
-}
-
-func buildDiagram(system SystemSnapshot, docker DockerSnapshot, baseURL string) string {
-	var b strings.Builder
-	b.WriteString("host linux system\n")
-	b.WriteString("  -> docker daemon\n")
-	if len(docker.Containers) == 0 {
-		b.WriteString("     -> no containers found\n")
-	} else {
-		for _, container := range docker.Containers {
-			b.WriteString("     -> container: ")
-			b.WriteString(container.Name)
-			b.WriteString(" (")
-			b.WriteString(container.State)
-			b.WriteString(")\n")
-		}
-	}
-	return annotateAPIStep(b.String(), baseURL)
-}
-
-// annotateAPIStep adds the instance's API base URL in brackets to the diagram
-// step for /api/architecture, matching the diagram's text style. Variants with
-// no such step are returned unchanged; no node is invented. The URL comes from
-// the same requestBaseURL derivation as endpointLinks.
-func annotateAPIStep(diagram, baseURL string) string {
-	if baseURL == "" || !strings.Contains(diagram, "/api/architecture") {
-		return diagram
-	}
-	apiURL := strings.TrimRight(baseURL, "/") + "/api"
-	lines := strings.Split(diagram, "\n")
-	for i, line := range lines {
-		if !strings.Contains(line, "/api/architecture") {
-			continue
-		}
-		if strings.Contains(line, "("+apiURL+")") {
-			break
-		}
-		cr := ""
-		if strings.HasSuffix(line, "\r") {
-			line = strings.TrimSuffix(line, "\r")
-			cr = "\r"
-		}
-		line = strings.TrimRight(line, " \t")
-		lines[i] = line + " (" + apiURL + ")" + cr
-		break
-	}
-	return strings.Join(lines, "\n")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
