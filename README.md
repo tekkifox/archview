@@ -155,7 +155,7 @@ resulting access token as a bearer token:
 ```bash
 # 1. Ask the identity provider for a token with the client credentials grant.
 TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
-  -u "monitoring:$MONITORING_CLIENT_SECRET" \
+  -u "$CLIENT_ID:$CLIENT_SECRET" \
   -d "grant_type=client_credentials" \
   -d "scope=archview:read" | jq -r .access_token)
 
@@ -176,7 +176,7 @@ ArchView validates the token and never stores a shared secret:
 Optional restrictions:
 
 ```bash
-# Only these OAuth clients may call the API as machines.
+# Only these OAuth clients (Client IDs, not names) may call the API as machines.
 OAUTH_M2M_CLIENTS=monitoring,ci
 # Tokens must carry all of these scopes.
 OAUTH_M2M_SCOPES=archview:read
@@ -344,12 +344,12 @@ HOST_SYS=/host/sys
 HOST_ROOT=/host/root
 
 # --- Login ---------------------------------------------------------------
-# OIDC issuer of the identity provider (Google, Entra ID, Keycloak, ...).
+# Auth0 tenant issuer (Auth0 publishes it with a trailing slash).
 AUTH_MODE=oidc
-OAUTH_ISSUER=https://accounts.example.com
+OAUTH_ISSUER=https://<tenant>.auth0.com/
 OAUTH_CLIENT_ID=archview
 OAUTH_CLIENT_SECRET=replace-me
-# Must match the callback registered with the provider byte for byte.
+# Must match the callback registered with Auth0 byte for byte.
 OAUTH_REDIRECT_URL=https://archview.rossmoney.me/auth/callback
 OAUTH_SCOPES="openid profile email"
 # Optional: restrict who may log in.
@@ -364,30 +364,50 @@ SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAMESITE=lax
 
 # Machine-to-machine client used by the rossmoney.me CMS (/api/architecture
-# proxy). Register "cms" as a client with the client_credentials grant and the
-# archview:read scope, then give the CMS its own client ID and secret.
-OAUTH_M2M_CLIENTS=cms
+# proxy). Access tokens are issued by Auth0 for the API identifier below: their
+# aud is https://archview.rossmoney.me/api, their azp is the Client ID of the
+# "cms" application and their scope contains archview:read.
+# Takes the Auth0 Client ID of the "cms" application (the opaque value from its
+# Settings), not the application name.
+OAUTH_M2M_CLIENTS=<cms-app-client-id>
 OAUTH_M2M_SCOPES=archview:read
+OAUTH_M2M_AUDIENCES=https://archview.rossmoney.me/api
 
 TRUST_PROXY_HEADERS=true
 ```
 
 Steps to bring it up:
 
-1. Register `https://archview.rossmoney.me/auth/callback` as the redirect URI of
-   a confidential (web) client with the provider, requesting the
-   `openid profile email` scopes.
-2. Register a second provider client (`cms`) with the client credentials grant
-   and the `archview:read` scope for the CMS.
-3. Put the values above in the stack's `stack.env` in Portainer and deploy
+1. In Auth0, create a **Regular Web Application** named `archview` and register
+   `https://archview.rossmoney.me/auth/callback` as an allowed callback URL.
+   `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` are its Client ID and Client
+   Secret; `OAUTH_REDIRECT_URL` is that same callback URI.
+2. Create an **API** whose identifier is `https://archview.rossmoney.me/api` and
+   define the `archview:read` permission. Enable *Add Permissions in the Access
+   Token* so the permission appears in the token's `scope`.
+3. Create a **Machine-to-Machine Application** named `cms` and authorize it for
+   that API with `archview:read`. `OAUTH_M2M_CLIENTS` takes its Client ID — the
+   opaque value from the application's Settings, not its name — while
+   `OAUTH_M2M_SCOPES` holds the required permission and `OAUTH_M2M_AUDIENCES`
+   the API identifier.
+4. Put the values above in the stack's `stack.env` in Portainer and deploy
    `docker-compose.portainer.yml`.
-4. Point the openresty server block for `archview.rossmoney.me` at
+5. Point the openresty server block for `archview.rossmoney.me` at
    `172.18.0.10:8083` and pass `Host`, `X-Forwarded-Proto` and
    `X-Forwarded-For` through unchanged.
-5. Store the CMS client ID and secret in the CMS stack as
+6. Store the CMS client ID and secret in the CMS stack as
    `ARCHVIEW_CLIENT_ID`/`ARCHVIEW_CLIENT_SECRET`, with
    `ARCHVIEW_URL=https://archview.rossmoney.me`. The CMS exchanges them for a
-   token at the provider's token endpoint and calls ArchView with it.
+   token at `https://<tenant>.auth0.com/oauth/token` with the
+   client-credentials grant, `audience=https://archview.rossmoney.me/api` and
+   `scope=archview:read`, then calls ArchView with the access token.
+
+Auth0 issues signed JWT access tokens, so no `OAUTH_INTROSPECTION_*` settings
+are needed: ArchView verifies them against the tenant JWKS. For an opaque-token
+provider such as Google, configure `OAUTH_INTROSPECTION_URL` instead (Google
+service accounts use `https://oauth2.googleapis.com/tokeninfo` with
+`OAUTH_INTROSPECTION_METHOD=GET` and `OAUTH_INTROSPECTION_AUTH_METHOD=none`);
+that is not this deployment because Auth0 access tokens are signed JWTs.
 
 Verify the boundary:
 
@@ -399,9 +419,10 @@ curl -sI https://archview.rossmoney.me/api/architecture | grep -i www-authentica
 curl -sI https://archview.rossmoney.me/auth/login | grep -i location
 
 # A client-credentials token gets a snapshot without a browser session.
-TOKEN=$(curl -s -X POST "$OAUTH_TOKEN_URL" \
-  -u "$ARCHVIEW_CLIENT_ID:$ARCHVIEW_CLIENT_SECRET" \
-  -d "grant_type=client_credentials" -d "scope=archview:read" | jq -r .access_token)
+TOKEN=$(curl -s -X POST "https://<tenant>.auth0.com/oauth/token" \
+  -H "Content-Type: application/json" \
+  -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$ARCHVIEW_CLIENT_ID\",\"client_secret\":\"$ARCHVIEW_CLIENT_SECRET\",\"audience\":\"https://archview.rossmoney.me/api\",\"scope\":\"archview:read\"}" \
+  | jq -r .access_token)
 curl -s -H "Authorization: Bearer $TOKEN" \
   "https://archview.rossmoney.me/api/architecture?project=image-mosaic" | head -c 200
 ```

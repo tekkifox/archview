@@ -144,24 +144,26 @@ type AuthConfig struct {
 type introspectionResponse struct {
 	// Active is a pointer because Google's tokeninfo endpoint omits it entirely;
 	// an absent flag is inferred from the expiry instead.
-	Active           *bool           `json:"active"`
-	Scope            string          `json:"scope"`
-	Scp              json.RawMessage `json:"scp"`
-	Sub              string          `json:"sub"`
-	Username         string          `json:"username"`
-	Email            string          `json:"email"`
-	ClientID         string          `json:"client_id"`
-	Azp              string          `json:"azp"`
-	Aud              json.RawMessage `json:"aud"`
-	Iss              string          `json:"iss"`
-	Exp              int64           `json:"exp"`
-	Iat              int64           `json:"iat"`
-	Nbf              int64           `json:"nbf"`
-	ExpiresIn        int64           `json:"expires_in"`
-	TokenType        string          `json:"token_type"`
-	GrantType        string          `json:"grant_type"`
-	Error            string          `json:"error"`
-	ErrorDescription string          `json:"error_description"`
+	Active   *bool           `json:"active"`
+	Scope    string          `json:"scope"`
+	Scp      json.RawMessage `json:"scp"`
+	Sub      string          `json:"sub"`
+	Username string          `json:"username"`
+	Email    string          `json:"email"`
+	ClientID string          `json:"client_id"`
+	Azp      string          `json:"azp"`
+	Aud      json.RawMessage `json:"aud"`
+	Iss      string          `json:"iss"`
+	// Numeric claims are decoded as json.Number so providers that return
+	// quoted numeric strings (Google's tokeninfo does) are accepted too.
+	Exp              json.Number `json:"exp"`
+	Iat              json.Number `json:"iat"`
+	Nbf              json.Number `json:"nbf"`
+	ExpiresIn        json.Number `json:"expires_in"`
+	TokenType        string      `json:"token_type"`
+	GrantType        string      `json:"grant_type"`
+	Error            string      `json:"error"`
+	ErrorDescription string      `json:"error_description"`
 }
 
 type providerMetadata struct {
@@ -756,6 +758,82 @@ func sameHost(rawURL, host string) bool {
 	return strings.EqualFold(parsed.Host, host)
 }
 
+// stateSameSite keeps the state cookie on lax. The browser comes back from the
+// identity provider with a cross-site top-level navigation, and a strict cookie
+// is not sent with it, which would fail every login with "login state is
+// missing or expired".
+func (a *AuthManager) stateSameSite() http.SameSite {
+	if a.sameSite() == http.SameSiteStrictMode {
+		return http.SameSiteLaxMode
+	}
+	return a.sameSite()
+}
+
+// stateTTLValue is the configured lifetime of the OAuth state cookie.
+func (a *AuthManager) stateTTLValue() time.Duration {
+	if a.cfg.StateTTL > 0 {
+		return a.cfg.StateTTL
+	}
+	return stateTTL
+}
+
+// effectiveScheme returns the scheme the browser used, honouring the proxy
+// headers only when they are trusted.
+func (a *AuthManager) effectiveScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if a.cfg.TrustProxyHeaders {
+		if forwarded := strings.ToLower(firstHeaderValue(r.Header.Get("X-Forwarded-Proto"))); forwarded != "" {
+			return forwarded
+		}
+	}
+	return "http"
+}
+
+// warnIfStateCookieWillBeDropped catches the most common cause of "login state
+// is missing or expired": a Secure cookie set over plain HTTP is discarded by
+// the browser, so the callback never sees it.
+func (a *AuthManager) warnIfStateCookieWillBeDropped(r *http.Request) {
+	scheme := a.effectiveScheme(r)
+	if a.cfg.CookieSecure && scheme != "https" {
+		log.Printf("archview auth: WARNING: /auth/login was reached over %s while SESSION_COOKIE_SECURE=true; browsers discard Secure cookies on insecure connections, so the callback will fail with %q. Serve the login over https, or set TRUST_PROXY_HEADERS=true when a TLS proxy forwards to ArchView", scheme, "login state is missing or expired")
+	}
+}
+
+// logMissingStateCookie records everything needed to explain why the browser
+// did not return the OAuth state cookie.
+func (a *AuthManager) logMissingStateCookie(r *http.Request) {
+	names := make([]string, 0, 4)
+	for _, cookie := range r.Cookies() {
+		names = append(names, cookie.Name)
+	}
+	log.Printf("archview auth: callback is missing the %q cookie (host=%q scheme=%q path=%q secure=%t sameSite=%q domain=%q receivedCookies=%v secFetchSite=%q)",
+		stateCookieName, r.Host, a.effectiveScheme(r), r.URL.Path, a.cfg.CookieSecure, a.cfg.CookieSameSite, a.cfg.CookieDomain, names, r.Header.Get("Sec-Fetch-Site"))
+
+	switch {
+	case a.cfg.CookieSecure && a.effectiveScheme(r) != "https":
+		log.Printf("archview auth: the callback was reached over %s but SESSION_COOKIE_SECURE=true, so the browser discarded the Secure state cookie; terminate TLS before ArchView or set TRUST_PROXY_HEADERS=true so X-Forwarded-Proto is honoured", a.effectiveScheme(r))
+	case a.cfg.CookieDomain != "" && !strings.HasSuffix(strings.ToLower(r.Host), strings.ToLower(strings.TrimPrefix(a.cfg.CookieDomain, "."))):
+		log.Printf("archview auth: SESSION_COOKIE_DOMAIN=%q does not cover the callback host %q, so the browser rejected the state cookie", a.cfg.CookieDomain, r.Host)
+	case a.cfg.RedirectURL != "" && !sameHost(a.cfg.RedirectURL, r.Host):
+		log.Printf("archview auth: OAUTH_REDIRECT_URL points at a different host than this callback (%q); start the login flow on the same hostname registered with the identity provider", a.cfg.RedirectURL)
+	case a.cfg.CookieSameSite == "strict":
+		log.Printf("archview auth: SESSION_COOKIE_SAMESITE=strict stops the browser from sending the state cookie on the provider redirect; use lax")
+	default:
+		log.Printf("archview auth: the state cookie was never stored or has expired (stateTtl=%s); this usually means the login and callback use different hosts or schemes, the user blocked cookies, or the provider consent screen took longer than the state lifetime", a.stateTTLValue())
+	}
+}
+
+// sameHost reports whether rawURL refers to the given request host.
+func sameHost(rawURL, host string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return true
+	}
+	return strings.EqualFold(parsed.Host, host)
+}
+
 func (a *AuthManager) sessionCookie(value string, expires time.Time) *http.Cookie {
 	cookie := &http.Cookie{
 		Name:     a.cfg.CookieName,
@@ -818,6 +896,16 @@ func (a *AuthManager) safeRedirect(r *http.Request, target string) string {
 	if target == "" {
 		return fallback
 	}
+	// Browsers strip tabs, newlines and carriage returns from URLs, so a
+	// target such as "/\t/evil.example" would become "//evil.example" after
+	// the browser rewrites it. Reject control characters before following the
+	// relative-path branch, including percent-encoded ones.
+	if containsControlCharacter(target) {
+		return fallback
+	}
+	if decoded, err := url.PathUnescape(target); err == nil && containsControlCharacter(decoded) {
+		return fallback
+	}
 	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") && !strings.Contains(target, "\\") {
 		return target
 	}
@@ -840,6 +928,18 @@ func (a *AuthManager) safeRedirect(r *http.Request, target string) string {
 		}
 	}
 	return fallback
+}
+
+// containsControlCharacter reports whether value contains an ASCII control
+// character (< 0x20 or 0x7f). Browsers silently strip several of these from
+// URLs, which can turn a relative redirect into a protocol-relative one.
+func containsControlCharacter(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func redirectPathAllowed(allowed, path string) bool {
@@ -975,7 +1075,17 @@ func bearerClientID(claims map[string]any) string {
 // isMachineToken distinguishes an application token (client credentials) from a
 // token that represents a human. Machine tokens are exempt from the
 // email/domain allowlist and are governed by MachineClients/MachineScopes.
+//
+// A bare client_id claim is not evidence of a machine caller: some providers
+// attach it to user tokens too. A token is only a machine token when it carries
+// a client-credentials grant claim or matches a configured machine client or
+// scope, and it never carries user claims.
 func (a *AuthManager) isMachineToken(claims map[string]any) bool {
+	for _, name := range []string{a.cfg.EmailClaim, "email", "username", "preferred_username"} {
+		if claimString(claims, name) != "" {
+			return false
+		}
+	}
 	for _, name := range []string{"gty", "grant_type"} {
 		if value := claimString(claims, name); strings.EqualFold(value, "client_credentials") || strings.EqualFold(value, "client-credentials") {
 			return true
@@ -984,15 +1094,11 @@ func (a *AuthManager) isMachineToken(claims map[string]any) bool {
 	if value := claimString(claims, "token_type"); strings.EqualFold(value, "client_credentials") {
 		return true
 	}
-	if claimString(claims, a.cfg.EmailClaim) != "" || claimString(claims, "username") != "" {
-		return false
-	}
-	if len(a.cfg.MachineScopes) > 0 && scopeContainsAll(claimScope(claims), a.cfg.MachineScopes) {
+	clientID := bearerClientID(claims)
+	if len(a.cfg.MachineClients) > 0 && containsFold(a.cfg.MachineClients, clientID) {
 		return true
 	}
-	// client_id is only set on application tokens (azp is also used by ID
-	// tokens), so its presence is safe evidence of a machine caller.
-	return claimString(claims, "client_id") != ""
+	return len(a.cfg.MachineScopes) > 0 && scopeContainsAll(claimScope(claims), a.cfg.MachineScopes)
 }
 
 // checkAudience enforces the accepted audience set for the token kind. Human
@@ -1638,9 +1744,26 @@ func (a *AuthManager) introspect(ctx context.Context, token string) (map[string]
 
 // claims converts an introspection response into JWT-style claims.
 func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
-	expiresAt := r.Exp
-	if expiresAt == 0 && r.ExpiresIn > 0 {
-		expiresAt = now.Add(time.Duration(r.ExpiresIn) * time.Second).Unix()
+	exp, err := numberAsInt64(r.Exp)
+	if err != nil {
+		return nil, fmt.Errorf("%w: introspection exp is not a number: %v", errInvalidToken, err)
+	}
+	iat, err := numberAsInt64(r.Iat)
+	if err != nil {
+		return nil, fmt.Errorf("%w: introspection iat is not a number: %v", errInvalidToken, err)
+	}
+	nbf, err := numberAsInt64(r.Nbf)
+	if err != nil {
+		return nil, fmt.Errorf("%w: introspection nbf is not a number: %v", errInvalidToken, err)
+	}
+	expiresIn, err := numberAsInt64(r.ExpiresIn)
+	if err != nil {
+		return nil, fmt.Errorf("%w: introspection expires_in is not a number: %v", errInvalidToken, err)
+	}
+
+	expiresAt := exp
+	if expiresAt == 0 && expiresIn > 0 {
+		expiresAt = now.Add(time.Duration(expiresIn) * time.Second).Unix()
 	}
 	if expiresAt == 0 {
 		return nil, fmt.Errorf("%w: introspection response has no expiry", errInvalidToken)
@@ -1648,7 +1771,7 @@ func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
 	if now.After(time.Unix(expiresAt, 0).Add(jwtClockSkew)) {
 		return nil, fmt.Errorf("%w: token expired", errInvalidToken)
 	}
-	if r.Nbf != 0 && now.Add(jwtClockSkew).Before(time.Unix(r.Nbf, 0)) {
+	if nbf != 0 && now.Add(jwtClockSkew).Before(time.Unix(nbf, 0)) {
 		return nil, fmt.Errorf("%w: token not valid yet", errInvalidToken)
 	}
 
@@ -1668,11 +1791,11 @@ func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
 	if r.Email != "" {
 		claims["email"] = r.Email
 	}
-	if r.Iat != 0 {
-		claims["iat"] = r.Iat
+	if iat != 0 {
+		claims["iat"] = iat
 	}
-	if r.Nbf != 0 {
-		claims["nbf"] = r.Nbf
+	if nbf != 0 {
+		claims["nbf"] = nbf
 	}
 	if len(r.Aud) > 0 {
 		var aud any
@@ -1698,6 +1821,15 @@ func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
 		}
 	}
 	return claims, nil
+}
+
+// numberAsInt64 converts an introspection numeric claim to seconds. An empty
+// json.Number means the provider omitted the claim.
+func numberAsInt64(value json.Number) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	return value.Int64()
 }
 
 // audience is checked separately because machine tokens may use a different

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
   workflow_dispatch:
 
 permissions:
@@ -36,8 +37,11 @@ jobs:
     env:
       # Support multiple Portainer webhook URLs. Set either PORTAINER_WEBHOOK_URL (single)
       # or PORTAINER_WEBHOOK_URLS (comma- or newline-separated) in repository secrets.
+      # The DEV_* pair is used for pushes to the dev branch instead.
       PORTAINER_WEBHOOK_URLS: ${{ secrets.PORTAINER_WEBHOOK_URLS }}
       PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+      PORTAINER_DEV_WEBHOOK_URLS: ${{ secrets.PORTAINER_DEV_WEBHOOK_URLS }}
+      PORTAINER_DEV_WEBHOOK_URL: ${{ secrets.PORTAINER_DEV_WEBHOOK_URL }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -64,6 +68,7 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/archview
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
             type=sha,prefix=
 
       - name: Build and push image
@@ -81,7 +86,13 @@ jobs:
       - name: Trigger Portainer webhook(s)
         run: |
           set -eu
-          urls_raw="${PORTAINER_WEBHOOK_URLS:-} ${PORTAINER_WEBHOOK_URL:-}"
+          # main redeploys the production stack, dev redeploys the dev stack;
+          # any other ref triggers neither.
+          case "${GITHUB_REF_NAME:-}" in
+            main) urls_raw="${PORTAINER_WEBHOOK_URLS:-} ${PORTAINER_WEBHOOK_URL:-}" ;;
+            dev) urls_raw="${PORTAINER_DEV_WEBHOOK_URLS:-} ${PORTAINER_DEV_WEBHOOK_URL:-}" ;;
+            *) urls_raw="" ;;
+          esac
           failures=0
           echo "Triggering Portainer webhooks..."
           echo "$urls_raw" | tr ',' '\n' | while read -r url; do
