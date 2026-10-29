@@ -272,8 +272,11 @@ func TestLoginStartsPKCEFlow(t *testing.T) {
 	if state.Redirect != "/docs" {
 		t.Fatalf("redirect = %q, want /docs", state.Redirect)
 	}
-	if !stateCookie.HttpOnly || stateCookie.Path != "/auth" {
+	if !stateCookie.HttpOnly || stateCookie.Path != "/" {
 		t.Fatalf("unexpected state cookie attributes: %+v", stateCookie)
+	}
+	if stateCookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("state cookie sameSite = %v, want lax", stateCookie.SameSite)
 	}
 	if stateCookie.Secure {
 		t.Fatal("state cookie should follow CookieSecure=false in tests")
@@ -351,6 +354,36 @@ func TestCallbackRejectsInvalidState(t *testing.T) {
 	if missingCookie.Code != http.StatusBadRequest {
 		t.Fatalf("missing state cookie status = %d, want 400", missingCookie.Code)
 	}
+	// The response must explain what to check, otherwise a missing state cookie
+	// is impossible to debug from the outside.
+	var payload map[string]any
+	if err := json.Unmarshal(missingCookie.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode callback error: %v", err)
+	}
+	if payload["error"] != "login state is missing or expired" {
+		t.Fatalf("unexpected callback error: %s", missingCookie.Body.String())
+	}
+	if hint, _ := payload["hint"].(string); hint == "" {
+		t.Fatalf("callback error has no hint: %s", missingCookie.Body.String())
+	}
+}
+
+// TestStateCookieSurvivesStrictSameSite guards the regression where
+// SESSION_COOKIE_SAMESITE=strict dropped the state cookie on the provider
+// redirect, which surfaced as "login state is missing or expired".
+func TestStateCookieSurvivesStrictSameSite(t *testing.T) {
+	provider := newFakeProvider(t)
+	config := testAuthConfig(provider.server.URL)
+	config.CookieSameSite = "strict"
+	handler := newAuthServer(t, config, nil)
+
+	_, stateCookie, _ := startLogin(t, handler, "/")
+	if stateCookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("state cookie sameSite = %v, want lax even when the session cookie is strict", stateCookie.SameSite)
+	}
+	if stateCookie.Path != "/" {
+		t.Fatalf("state cookie path = %q, want /", stateCookie.Path)
+	}
 }
 
 func TestCallbackRejectsDisallowedEmailAndNonce(t *testing.T) {
@@ -373,11 +406,9 @@ func TestCallbackRejectsDisallowedEmailAndNonce(t *testing.T) {
 	}
 }
 
-func TestBearerJWTAndAPIKeyAuthentication(t *testing.T) {
+func TestBearerJWTAuthentication(t *testing.T) {
 	provider := newFakeProvider(t)
-	config := testAuthConfig(provider.server.URL)
-	config.APIKeys = []string{"monitor:static-api-key"}
-	handler := newAuthServer(t, config, nil)
+	handler := newAuthServer(t, testAuthConfig(provider.server.URL), nil)
 
 	now := time.Now()
 	claims := validClaims(now, provider.server.URL, testClientID)
@@ -392,23 +423,23 @@ func TestBearerJWTAndAPIKeyAuthentication(t *testing.T) {
 		t.Fatalf("bearer token status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
 	}
 
-	apiKeyRequest := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
-	apiKeyRequest.Header.Set("Authorization", "Bearer static-api-key")
-	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, apiKeyRequest)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("api key status = %d, want 200", recorder.Code)
-	}
-
 	userRequest := httptest.NewRequest(http.MethodGet, "http://archview.test/auth/user", nil)
-	userRequest.Header.Set("Authorization", "Bearer static-api-key")
+	userRequest.Header.Set("Authorization", "Bearer "+token)
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, userRequest)
-	if !strings.Contains(recorder.Body.String(), "api_key") {
-		t.Fatalf("api key principal not reported: %s", recorder.Body.String())
+	var userPayload struct {
+		User struct {
+			Method string `json:"method"`
+		} `json:"user"`
 	}
-	if strings.Contains(recorder.Body.String(), "static-api-key") {
-		t.Fatal("the raw API key must never be returned to clients")
+	if err := json.Unmarshal(recorder.Body.Bytes(), &userPayload); err != nil {
+		t.Fatalf("decode auth/user payload: %v", err)
+	}
+	if userPayload.User.Method != "bearer" {
+		t.Fatalf("bearer principal not reported: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), token) {
+		t.Fatal("the raw bearer token must never be returned to clients")
 	}
 
 	expired := validClaims(now.Add(-3*time.Hour), provider.server.URL, testClientID)
@@ -421,24 +452,235 @@ func TestBearerJWTAndAPIKeyAuthentication(t *testing.T) {
 	}
 }
 
-func TestAPIKeyOnlyModeNeedsNoProviderOrSessionSecret(t *testing.T) {
-	handler := newAuthServer(t, AuthConfig{
-		Mode:    authModeNone,
-		APIKeys: []string{"monitor-key"},
-	}, nil)
+// machineClaims builds a client-credentials token the way providers such as
+// Keycloak, Entra ID and Auth0 issue them: no human identity, a client_id and
+// the client_credentials grant recorded in the token.
+func machineClaims(now time.Time, issuer, audience, clientID string, scopes ...string) map[string]any {
+	return map[string]any{
+		"iss":       issuer,
+		"aud":       audience,
+		"sub":       clientID,
+		"client_id": clientID,
+		"gty":       "client_credentials",
+		"scope":     strings.Join(scopes, " "),
+		"iat":       now.Unix(),
+		"exp":       now.Add(time.Hour).Unix(),
+	}
+}
 
+func TestClientCredentialsJWTAuthentication(t *testing.T) {
+	provider := newFakeProvider(t)
+	config := testAuthConfig(provider.server.URL)
+	// A human allowlist is configured, but it must not apply to machine tokens.
+	config.MachineClients = []string{"monitoring"}
+	config.MachineScopes = []string{"archview:read"}
+	handler := newAuthServer(t, config, nil)
+
+	now := time.Now()
+	token := signRS256(t, provider.key, provider.kid, machineClaims(now, provider.server.URL, testClientID, "monitoring", "archview:read"))
+
+	request := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil))
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("client credentials status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	userRequest := httptest.NewRequest(http.MethodGet, "http://archview.test/auth/user", nil)
+	userRequest.Header.Set("Authorization", "Bearer "+token)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, userRequest)
+	var userPayload struct {
+		User struct {
+			Subject string `json:"sub"`
+			Method  string `json:"method"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &userPayload); err != nil {
+		t.Fatalf("decode auth/user payload: %v", err)
+	}
+	if userPayload.User.Method != "client_credentials" {
+		t.Fatalf("machine principal not reported: %s", recorder.Body.String())
+	}
+	if userPayload.User.Subject != "client:monitoring" {
+		t.Fatalf("machine principal subject is wrong: %s", recorder.Body.String())
+	}
+}
+
+func TestClientCredentialsEnforcesAllowlists(t *testing.T) {
+	provider := newFakeProvider(t)
+	config := testAuthConfig(provider.server.URL)
+	config.MachineClients = []string{"monitoring"}
+	config.MachineScopes = []string{"archview:read"}
+	handler := newAuthServer(t, config, nil)
+	now := time.Now()
+
+	cases := map[string]map[string]any{
+		"unknown client": machineClaims(now, provider.server.URL, testClientID, "intruder", "archview:read"),
+		"missing scope":  machineClaims(now, provider.server.URL, testClientID, "monitoring", "other:scope"),
+	}
+	for name, claims := range cases {
+		request := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+		request.Header.Set("Authorization", "Bearer "+signRS256(t, provider.key, provider.kid, claims))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want 401 (body %s)", name, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestMachineTokensUseTheirOwnAudience(t *testing.T) {
+	provider := newFakeProvider(t)
+	config := testAuthConfig(provider.server.URL)
+	config.MachineAudiences = []string{"https://archview.example/api"}
+	handler := newAuthServer(t, config, nil)
+	now := time.Now()
+
+	machineToken := signRS256(t, provider.key, provider.kid,
+		machineClaims(now, provider.server.URL, "https://archview.example/api", "monitoring", "archview:read"))
+	request := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+	request.Header.Set("Authorization", "Bearer "+machineToken)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("machine audience status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	// A human token for a different audience must still be rejected.
+	human := validClaims(now, provider.server.URL, "https://archview.example/api")
+	request = httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+	request.Header.Set("Authorization", "Bearer "+signRS256(t, provider.key, provider.kid, human))
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("human token with the machine audience status = %d, want 401", recorder.Code)
+	}
+}
+
+// TestOpaqueTokensRequireIntrospection ensures an opaque token is never treated
+// as a credential unless a validation endpoint is configured.
+func TestOpaqueTokensRequireIntrospection(t *testing.T) {
+	provider := newFakeProvider(t)
+	handler := newAuthServer(t, testAuthConfig(provider.server.URL), nil)
+
+	request := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+	request.Header.Set("Authorization", "Bearer opaque-access-token")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", recorder.Code)
 	}
+}
+
+// TestOpaqueTokenIntrospection covers providers that issue opaque access tokens
+// for machine clients (RFC 7662 introspection and Google's tokeninfo endpoint).
+func TestOpaqueTokenIntrospection(t *testing.T) {
+	provider := newFakeProvider(t)
+
+	var (
+		mu       sync.Mutex
+		active   = true
+		received = ""
+	)
+	introspection := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		received = r.PostForm.Get("token")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"active":    active,
+			"sub":       "service-account-1",
+			"client_id": "monitoring",
+			"aud":       testClientID,
+			"scope":     "archview:read",
+			"exp":       time.Now().Add(time.Hour).Unix(),
+		})
+	}))
+	t.Cleanup(introspection.Close)
+
+	config := testAuthConfig(provider.server.URL)
+	config.IntrospectionURL = introspection.URL
+	config.MachineClients = []string{"monitoring"}
+	config.MachineScopes = []string{"archview:read"}
+	handler := newAuthServer(t, config, nil)
 
 	request := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
-	request.Header.Set("Authorization", "Bearer monitor-key")
-	recorder = httptest.NewRecorder()
+	request.Header.Set("Authorization", "Bearer opaque-access-token")
+	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", recorder.Code)
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	mu.Lock()
+	got := received
+	mu.Unlock()
+	if got != "opaque-access-token" {
+		t.Fatalf("introspection received token %q", got)
+	}
+
+	mu.Lock()
+	active = false
+	mu.Unlock()
+	request = httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+	request.Header.Set("Authorization", "Bearer opaque-access-token")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("inactive token status = %d, want 401", recorder.Code)
+	}
+}
+
+// TestGoogleStyleIntrospectionUsesGET covers Google's tokeninfo endpoint, which
+// takes the token as a query parameter and returns expires_in instead of exp.
+func TestGoogleStyleIntrospectionUsesGET(t *testing.T) {
+	provider := newFakeProvider(t)
+
+	var (
+		mu      sync.Mutex
+		queried = ""
+	)
+	introspection := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queried = r.URL.Query().Get("access_token")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"aud":        testClientID,
+			"sub":        "1234567890",
+			"scope":      "archview:read",
+			"expires_in": 3599,
+			"azp":        "service-account",
+		})
+	}))
+	t.Cleanup(introspection.Close)
+
+	config := testAuthConfig(provider.server.URL)
+	config.IntrospectionURL = introspection.URL
+	config.IntrospectionMethod = http.MethodGet
+	config.IntrospectionAuthMethod = "none"
+	config.MachineScopes = []string{"archview:read"}
+	handler := newAuthServer(t, config, nil)
+
+	request := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+	request.Header.Set("Authorization", "Bearer ya29.opaque-token")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	mu.Lock()
+	got := queried
+	mu.Unlock()
+	if got != "ya29.opaque-token" {
+		t.Fatalf("introspection query received %q", got)
 	}
 }
 
@@ -549,6 +791,25 @@ func TestNewServerValidatesAuthConfiguration(t *testing.T) {
 			ClientID:          testClientID,
 			SessionSecret:     testSessionSecret,
 			PostLoginRedirect: "javascript:alert(1)",
+		},
+		{
+			Mode:          authModeOIDC,
+			IssuerURL:     testIssuer,
+			ClientID:      testClientID,
+			SessionSecret: testSessionSecret,
+			StateTTL:      2 * time.Hour, // exceeds the 1h maximum
+		},
+		{
+			Mode:           authModeNone,
+			MachineClients: []string{"monitoring"}, // machine auth needs a provider
+		},
+		{
+			Mode:                    authModeOIDC,
+			IssuerURL:               testIssuer,
+			ClientID:                testClientID,
+			SessionSecret:           testSessionSecret,
+			IntrospectionURL:        "https://issuer.example/introspect",
+			IntrospectionAuthMethod: "client_secret_basic", // no client secret configured
 		},
 	}
 	for _, cfg := range cases {

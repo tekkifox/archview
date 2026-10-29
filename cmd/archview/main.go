@@ -67,46 +67,55 @@ func main() {
 
 func loadConfig() (service.Config, error) {
 	auth := service.AuthConfig{
-		Mode:                os.Getenv("AUTH_MODE"),
-		IssuerURL:           os.Getenv("OAUTH_ISSUER"),
-		DiscoveryURL:        os.Getenv("OAUTH_DISCOVERY_URL"),
-		AuthorizationURL:    os.Getenv("OAUTH_AUTHORIZATION_URL"),
-		TokenURL:            os.Getenv("OAUTH_TOKEN_URL"),
-		UserinfoURL:         os.Getenv("OAUTH_USERINFO_URL"),
-		EmailsURL:           os.Getenv("OAUTH_EMAILS_URL"),
-		JWKSURL:             os.Getenv("OAUTH_JWKS_URL"),
-		EndSessionURL:       os.Getenv("OAUTH_END_SESSION_URL"),
-		ClientID:            os.Getenv("OAUTH_CLIENT_ID"),
-		ClientSecret:        os.Getenv("OAUTH_CLIENT_SECRET"),
-		RedirectURL:         os.Getenv("OAUTH_REDIRECT_URL"),
-		Scopes:              envList("OAUTH_SCOPES"),
-		TokenAuthMethod:     os.Getenv("OAUTH_TOKEN_AUTH_METHOD"),
-		SubjectClaim:        os.Getenv("OAUTH_SUBJECT_CLAIM"),
-		EmailClaim:          os.Getenv("OAUTH_EMAIL_CLAIM"),
-		NameClaim:           os.Getenv("OAUTH_NAME_CLAIM"),
-		PictureClaim:        os.Getenv("OAUTH_PICTURE_CLAIM"),
-		AllowedEmails:       envList("OAUTH_ALLOWED_EMAILS"),
-		AllowedDomains:      envList("OAUTH_ALLOWED_DOMAINS"),
-		Audiences:           envList("OAUTH_AUDIENCES"),
-		APIKeys:             envList("API_KEYS"),
-		SessionSecret:       []byte(os.Getenv("SESSION_SECRET")),
-		SessionTTL:          envDuration("SESSION_TTL", 8*time.Hour),
-		CookieName:          os.Getenv("SESSION_COOKIE_NAME"),
-		CookieDomain:        os.Getenv("SESSION_COOKIE_DOMAIN"),
-		CookieSameSite:      os.Getenv("SESSION_COOKIE_SAMESITE"),
-		CookieSecure:        envBool("SESSION_COOKIE_SECURE", true),
-		PostLoginRedirect:   envOrDefault("OAUTH_POST_LOGIN_REDIRECT", "/"),
-		PostLogoutRedirect:  os.Getenv("OAUTH_POST_LOGOUT_REDIRECT"),
-		AllowedRedirectURLs: envList("OAUTH_ALLOWED_REDIRECT_URLS"),
-		AllowInsecureHTTP:   envBool("OAUTH_ALLOW_INSECURE_HTTP", false),
-		TrustProxyHeaders:   envBool("TRUST_PROXY_HEADERS", false),
-		HTTPTimeout:         envDuration("OAUTH_HTTP_TIMEOUT", 10*time.Second),
+		Mode:                    os.Getenv("AUTH_MODE"),
+		IssuerURL:               os.Getenv("OAUTH_ISSUER"),
+		DiscoveryURL:            os.Getenv("OAUTH_DISCOVERY_URL"),
+		AuthorizationURL:        os.Getenv("OAUTH_AUTHORIZATION_URL"),
+		TokenURL:                os.Getenv("OAUTH_TOKEN_URL"),
+		UserinfoURL:             os.Getenv("OAUTH_USERINFO_URL"),
+		EmailsURL:               os.Getenv("OAUTH_EMAILS_URL"),
+		JWKSURL:                 os.Getenv("OAUTH_JWKS_URL"),
+		EndSessionURL:           os.Getenv("OAUTH_END_SESSION_URL"),
+		ClientID:                os.Getenv("OAUTH_CLIENT_ID"),
+		ClientSecret:            os.Getenv("OAUTH_CLIENT_SECRET"),
+		RedirectURL:             os.Getenv("OAUTH_REDIRECT_URL"),
+		Scopes:                  envList("OAUTH_SCOPES"),
+		TokenAuthMethod:         os.Getenv("OAUTH_TOKEN_AUTH_METHOD"),
+		SubjectClaim:            os.Getenv("OAUTH_SUBJECT_CLAIM"),
+		EmailClaim:              os.Getenv("OAUTH_EMAIL_CLAIM"),
+		NameClaim:               os.Getenv("OAUTH_NAME_CLAIM"),
+		PictureClaim:            os.Getenv("OAUTH_PICTURE_CLAIM"),
+		AllowedEmails:           envList("OAUTH_ALLOWED_EMAILS"),
+		AllowedDomains:          envList("OAUTH_ALLOWED_DOMAINS"),
+		Audiences:               envList("OAUTH_AUDIENCES"),
+		MachineClients:          envList("OAUTH_M2M_CLIENTS"),
+		MachineScopes:           envList("OAUTH_M2M_SCOPES"),
+		MachineAudiences:        envList("OAUTH_M2M_AUDIENCES"),
+		IntrospectionURL:        os.Getenv("OAUTH_INTROSPECTION_URL"),
+		IntrospectionAuthMethod: os.Getenv("OAUTH_INTROSPECTION_AUTH_METHOD"),
+		IntrospectionMethod:     os.Getenv("OAUTH_INTROSPECTION_METHOD"),
+		SessionSecret:           []byte(os.Getenv("SESSION_SECRET")),
+		SessionTTL:              envDuration("SESSION_TTL", 8*time.Hour),
+		StateTTL:                envDuration("OAUTH_STATE_TTL", 10*time.Minute),
+		CookieName:              os.Getenv("SESSION_COOKIE_NAME"),
+		CookieDomain:            os.Getenv("SESSION_COOKIE_DOMAIN"),
+		CookieSameSite:          os.Getenv("SESSION_COOKIE_SAMESITE"),
+		CookieSecure:            envBool("SESSION_COOKIE_SECURE", true),
+		PostLoginRedirect:       envOrDefault("OAUTH_POST_LOGIN_REDIRECT", "/"),
+		PostLogoutRedirect:      os.Getenv("OAUTH_POST_LOGOUT_REDIRECT"),
+		AllowedRedirectURLs:     envList("OAUTH_ALLOWED_REDIRECT_URLS"),
+		AllowInsecureHTTP:       envBool("OAUTH_ALLOW_INSECURE_HTTP", false),
+		TrustProxyHeaders:       envBool("TRUST_PROXY_HEADERS", false),
+		HTTPTimeout:             envDuration("OAUTH_HTTP_TIMEOUT", 10*time.Second),
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(auth.Mode))
-	if (mode == "" || mode == "none") && len(auth.APIKeys) == 0 &&
+	if (mode == "" || mode == "none") &&
 		auth.IssuerURL == "" && auth.DiscoveryURL == "" && auth.AuthorizationURL == "" {
-		log.Printf("WARNING: authentication is disabled; set AUTH_MODE=oidc (or configure API_KEYS) to protect this deployment")
+		log.Printf("WARNING: authentication is disabled; set AUTH_MODE=oidc to protect this deployment")
+	}
+	if strings.TrimSpace(os.Getenv("API_KEYS")) != "" {
+		log.Printf("WARNING: API_KEYS is no longer supported and is ignored; machine clients must request an OAuth 2.0 access token with the client_credentials grant")
 	}
 
 	return service.Config{
@@ -135,9 +144,6 @@ func authModeLabel(cfg service.AuthConfig) string {
 		}
 	}
 	if mode == "none" {
-		if len(cfg.APIKeys) > 0 {
-			return "api-key"
-		}
 		return "none (unauthenticated)"
 	}
 	return mode

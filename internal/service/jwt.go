@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -279,8 +280,8 @@ func verifyJWT(ctx context.Context, raw string, keys *jwksCache, opts jwtVerifyO
 		}
 	}
 	if opts.Issuer != "" {
-		if issuer, _ := claims["iss"].(string); issuer != opts.Issuer {
-			return nil, fmt.Errorf("%w: unexpected issuer", errInvalidToken)
+		if issuer, _ := claims["iss"].(string); !issuerMatches(issuer, opts.Issuer) {
+			return nil, fmt.Errorf("%w: unexpected issuer %q", errInvalidToken, issuer)
 		}
 	}
 	if len(opts.Audiences) > 0 && !audienceMatches(claims["aud"], opts.Audiences) {
@@ -292,6 +293,21 @@ func verifyJWT(ctx context.Context, raw string, keys *jwksCache, opts jwtVerifyO
 		}
 	}
 	return claims, nil
+}
+
+// issuerMatches compares the `iss` claim with the configured issuer. Google ID
+// tokens have historically used "accounts.google.com" while the discovery
+// document advertises "https://accounts.google.com"; both forms are accepted
+// because the signature already ties the token to the provider's keys.
+func issuerMatches(claim, expected string) bool {
+	if claim == expected {
+		return true
+	}
+	parsed, err := url.Parse(expected)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return false
+	}
+	return claim == parsed.Host
 }
 
 func supportedJWTAlgorithm(alg string) bool {
