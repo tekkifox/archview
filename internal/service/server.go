@@ -78,12 +78,8 @@ type DockerSnapshot struct {
 }
 
 type DockerDaemonSummary struct {
-	ServerVersion     string `json:"serverVersion"`
-	ApiVersion        string `json:"apiVersion"`
 	OperatingSystem   string `json:"operatingSystem"`
-	KernelVersion     string `json:"kernelVersion"`
 	Architecture      string `json:"architecture"`
-	DockerRootDir     string `json:"dockerRootDir"`
 	Driver            string `json:"driver"`
 	NCPU              int    `json:"ncpu"`
 	MemTotalBytes     int64  `json:"memoryTotalBytes"`
@@ -92,48 +88,33 @@ type DockerDaemonSummary struct {
 	Images            int    `json:"images"`
 }
 
+// ContainerSummary deliberately omits ports, labels, commands and mount counts:
+// they expose host internals and may carry secrets.
 type ContainerSummary struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name"`
-	Image      string            `json:"image"`
-	State      string            `json:"state"`
-	Status     string            `json:"status"`
-	Created    int64             `json:"created"`
-	Ports      []PortSummary     `json:"ports"`
-	Labels     map[string]string `json:"labels,omitempty"`
-	Command    string            `json:"command,omitempty"`
-	MountCount int               `json:"mountCount,omitempty"`
-}
-
-type PortSummary struct {
-	PrivatePort int    `json:"privatePort"`
-	PublicPort  int    `json:"publicPort"`
-	Type        string `json:"type"`
-	IP          string `json:"ip"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Image   string `json:"image"`
+	State   string `json:"state"`
+	Status  string `json:"status"`
+	Created int64  `json:"created"`
 }
 
 type ImageSummary struct {
-	ID           string   `json:"id"`
-	RepoTags     []string `json:"repoTags"`
-	SizeBytes    int64    `json:"sizeBytes"`
-	Created      int64    `json:"created"`
-	Dangling     bool     `json:"dangling"`
-	Architecture string   `json:"architecture,omitempty"`
-	Os           string   `json:"os,omitempty"`
+	RepoTags  []string `json:"repoTags"`
+	SizeBytes int64    `json:"sizeBytes"`
+	Created   int64    `json:"created"`
+	Dangling  bool     `json:"dangling"`
 }
 
 type SystemSnapshot struct {
-	Hostname      string            `json:"hostname"`
-	OS            string            `json:"os"`
-	Kernel        string            `json:"kernel"`
-	Architecture  string            `json:"architecture"`
-	UptimeSeconds float64           `json:"uptimeSeconds"`
-	CPUCount      int               `json:"cpuCount"`
-	LoadAverage   []float64         `json:"loadAverage"`
-	Memory        MemorySnapshot    `json:"memory"`
-	Processes     int               `json:"processes"`
-	Disks         []DiskSnapshot    `json:"disks"`
-	Network       []NetworkSnapshot `json:"network"`
+	Hostname    string            `json:"hostname"`
+	OS          string            `json:"os"`
+	CPUCount    int               `json:"cpuCount"`
+	LoadAverage []float64         `json:"loadAverage"`
+	Memory      MemorySnapshot    `json:"memory"`
+	Processes   int               `json:"processes"`
+	Disks       []DiskSnapshot    `json:"disks"`
+	Network     []NetworkSnapshot `json:"network"`
 }
 
 type MemorySnapshot struct {
@@ -147,28 +128,27 @@ type MemorySnapshot struct {
 }
 
 type DiskSnapshot struct {
-	MountPoint  string  `json:"mountPoint"`
-	Filesystem  string  `json:"filesystem"`
 	TotalBytes  uint64  `json:"totalBytes"`
 	FreeBytes   uint64  `json:"freeBytes"`
 	UsedBytes   uint64  `json:"usedBytes"`
 	UsedPercent float64 `json:"usedPercent"`
+
+	// mountPoint identifies the root filesystem for telemetry. It is
+	// deliberately unexported so the host path is never serialised.
+	mountPoint string
 }
 
 type NetworkSnapshot struct {
-	Interface string `json:"interface"`
-	Received  uint64 `json:"receivedBytes"`
-	Sent      uint64 `json:"sentBytes"`
+	Received uint64 `json:"receivedBytes"`
+	Sent     uint64 `json:"sentBytes"`
 }
 
 type ServiceSummary struct {
-	Name   string            `json:"name"`
-	Kind   string            `json:"kind"`
-	Status string            `json:"status"`
-	Image  string            `json:"image,omitempty"`
-	Node   string            `json:"node,omitempty"`
-	Ports  []PortSummary     `json:"ports,omitempty"`
-	Labels map[string]string `json:"labels,omitempty"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Status string `json:"status"`
+	Image  string `json:"image,omitempty"`
+	Node   string `json:"node,omitempty"`
 }
 
 type NodeSummary struct {
@@ -179,12 +159,8 @@ type NodeSummary struct {
 }
 
 type dockerInfo struct {
-	ServerVersion     string `json:"ServerVersion"`
-	ApiVersion        string `json:"ApiVersion"`
-	KernelVersion     string `json:"KernelVersion"`
 	OperatingSystem   string `json:"OperatingSystem"`
 	Architecture      string `json:"Architecture"`
-	DockerRootDir     string `json:"DockerRootDir"`
 	Driver            string `json:"Driver"`
 	NCPU              int    `json:"NCPU"`
 	MemTotal          int64  `json:"MemTotal"`
@@ -197,32 +173,19 @@ type dockerContainer struct {
 	ID      string            `json:"Id"`
 	Names   []string          `json:"Names"`
 	Image   string            `json:"Image"`
-	Command string            `json:"Command"`
 	Created int64             `json:"Created"`
 	State   string            `json:"State"`
 	Status  string            `json:"Status"`
 	Labels  map[string]string `json:"Labels"`
-	Ports   []dockerPort      `json:"Ports"`
-	Mounts  []any             `json:"Mounts"`
-}
-
-type dockerPort struct {
-	PrivatePort int    `json:"PrivatePort"`
-	PublicPort  int    `json:"PublicPort"`
-	Type        string `json:"Type"`
-	IP          string `json:"IP"`
 }
 
 type dockerImage struct {
-	ID           string            `json:"Id"`
-	RepoTags     []string          `json:"RepoTags"`
-	Labels       map[string]string `json:"Labels"`
-	Size         int64             `json:"Size"`
-	Created      int64             `json:"Created"`
-	Containers   int               `json:"Containers"`
-	Dangling     bool              `json:"Dangling"`
-	Os           string            `json:"Os"`
-	Architecture string            `json:"Architecture"`
+	ID       string            `json:"Id"`
+	RepoTags []string          `json:"RepoTags"`
+	Labels   map[string]string `json:"Labels"`
+	Size     int64             `json:"Size"`
+	Created  int64             `json:"Created"`
+	Dangling bool              `json:"Dangling"`
 }
 
 type dockerContainerInspect struct {
@@ -707,29 +670,28 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 			Kind:   "container",
 			Status: container.Status,
 			Image:  container.Image,
-			Ports:  container.Ports,
-			Labels: container.Labels,
 		})
 	}
 	services = append(services, ServiceSummary{
 		Name:   "docker-daemon",
 		Kind:   "daemon",
 		Status: fmt.Sprintf("%d containers, %d images", docker.Daemon.Containers, docker.Daemon.Images),
-		Labels: map[string]string{"endpoint": s.dockerBase},
 	})
 
 	nodes := []NodeSummary{{
-		Name:    system.Hostname,
-		Kind:    "linux-host",
-		Status:  fmt.Sprintf("%0.2f load average", system.LoadAverage[0]),
-		Details: map[string]string{"kernel": system.Kernel, "os": system.OS},
+		Name:   system.Hostname,
+		Kind:   "linux-host",
+		Status: fmt.Sprintf("%0.2f load average", system.LoadAverage[0]),
 	}}
 	for _, container := range docker.Containers {
 		nodes = append(nodes, NodeSummary{
-			Name:    container.Name,
-			Kind:    "container",
-			Status:  container.State,
-			Details: map[string]string{"image": container.Image},
+			Name:   container.Name,
+			Kind:   "container",
+			Status: container.State,
+			Details: map[string]string{
+				"image": container.Image,
+				"state": container.State,
+			},
 		})
 	}
 
@@ -774,29 +736,28 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) 
 			Kind:   "container",
 			Status: container.Status,
 			Image:  container.Image,
-			Ports:  container.Ports,
-			Labels: container.Labels,
 		})
 	}
 	services = append(services, ServiceSummary{
 		Name:   "docker-daemon",
 		Kind:   "daemon",
 		Status: fmt.Sprintf("%d containers, %d images", docker.Daemon.Containers, docker.Daemon.Images),
-		Labels: map[string]string{"project": projectLabel},
 	})
 
 	nodes := []NodeSummary{{
-		Name:    system.Hostname,
-		Kind:    "linux-host",
-		Status:  fmt.Sprintf("%0.2f load average", system.LoadAverage[0]),
-		Details: map[string]string{"kernel": system.Kernel, "os": system.OS},
+		Name:   system.Hostname,
+		Kind:   "linux-host",
+		Status: fmt.Sprintf("%0.2f load average", system.LoadAverage[0]),
 	}}
 	for _, container := range docker.Containers {
 		nodes = append(nodes, NodeSummary{
-			Name:    container.Name,
-			Kind:    "container",
-			Status:  container.State,
-			Details: map[string]string{"image": container.Image},
+			Name:   container.Name,
+			Kind:   "container",
+			Status: container.State,
+			Details: map[string]string{
+				"image": container.Image,
+				"state": container.State,
+			},
 		})
 	}
 
@@ -853,15 +814,12 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 	containerSummaries := make([]ContainerSummary, 0, len(containers))
 	for _, container := range containers {
 		containerSummaries = append(containerSummaries, ContainerSummary{
-			ID:      container.ID,
+			ID:      shortID(container.ID),
 			Name:    cleanDockerName(container.Names),
 			Image:   container.Image,
 			State:   container.State,
 			Status:  container.Status,
 			Created: container.Created,
-			Ports:   mapPorts(container.Ports),
-			Labels:  container.Labels,
-			Command: trimCommand(container.Command),
 		})
 		addProjectImage(projectImages, container.Image)
 	}
@@ -872,24 +830,17 @@ func (s *Server) collectDocker(ctx context.Context) (DockerSnapshot, error) {
 			continue
 		}
 		imageSummaries = append(imageSummaries, ImageSummary{
-			ID:           image.ID,
-			RepoTags:     image.RepoTags,
-			SizeBytes:    image.Size,
-			Created:      image.Created,
-			Dangling:     image.Dangling,
-			Architecture: image.Architecture,
-			Os:           image.Os,
+			RepoTags:  image.RepoTags,
+			SizeBytes: image.Size,
+			Created:   image.Created,
+			Dangling:  image.Dangling,
 		})
 	}
 
 	return DockerSnapshot{
 		Daemon: DockerDaemonSummary{
-			ServerVersion:     info.ServerVersion,
-			ApiVersion:        info.ApiVersion,
 			OperatingSystem:   info.OperatingSystem,
-			KernelVersion:     info.KernelVersion,
 			Architecture:      info.Architecture,
-			DockerRootDir:     info.DockerRootDir,
 			Driver:            info.Driver,
 			NCPU:              info.NCPU,
 			MemTotalBytes:     info.MemTotal,
@@ -936,15 +887,12 @@ func (s *Server) collectDockerAll(ctx context.Context) (DockerSnapshot, error) {
 		}
 
 		containerSummaries = append(containerSummaries, ContainerSummary{
-			ID:      container.ID,
+			ID:      shortID(container.ID),
 			Name:    name,
 			Image:   container.Image,
 			State:   container.State,
 			Status:  container.Status,
 			Created: container.Created,
-			Ports:   mapPorts(container.Ports),
-			Labels:  container.Labels,
-			Command: trimCommand(container.Command),
 		})
 	}
 
@@ -955,24 +903,17 @@ func (s *Server) collectDockerAll(ctx context.Context) (DockerSnapshot, error) {
 			continue
 		}
 		imageSummaries = append(imageSummaries, ImageSummary{
-			ID:           image.ID,
-			RepoTags:     image.RepoTags,
-			SizeBytes:    image.Size,
-			Created:      image.Created,
-			Dangling:     image.Dangling,
-			Architecture: image.Architecture,
-			Os:           image.Os,
+			RepoTags:  image.RepoTags,
+			SizeBytes: image.Size,
+			Created:   image.Created,
+			Dangling:  image.Dangling,
 		})
 	}
 
 	return DockerSnapshot{
 		Daemon: DockerDaemonSummary{
-			ServerVersion:     info.ServerVersion,
-			ApiVersion:        info.ApiVersion,
 			OperatingSystem:   info.OperatingSystem,
-			KernelVersion:     info.KernelVersion,
 			Architecture:      info.Architecture,
-			DockerRootDir:     info.DockerRootDir,
 			Driver:            info.Driver,
 			NCPU:              info.NCPU,
 			MemTotalBytes:     info.MemTotal,
@@ -1014,15 +955,12 @@ func (s *Server) collectDockerForProject(ctx context.Context, projectLabel strin
 		}
 
 		containerSummaries = append(containerSummaries, ContainerSummary{
-			ID:      container.ID,
+			ID:      shortID(container.ID),
 			Name:    name,
 			Image:   container.Image,
 			State:   container.State,
 			Status:  container.Status,
 			Created: container.Created,
-			Ports:   mapPorts(container.Ports),
-			Labels:  container.Labels,
-			Command: trimCommand(container.Command),
 		})
 	}
 
@@ -1056,24 +994,17 @@ func (s *Server) collectDockerForProject(ctx context.Context, projectLabel strin
 		}
 
 		imageSummaries = append(imageSummaries, ImageSummary{
-			ID:           image.ID,
-			RepoTags:     image.RepoTags,
-			SizeBytes:    image.Size,
-			Created:      image.Created,
-			Dangling:     image.Dangling,
-			Architecture: image.Architecture,
-			Os:           image.Os,
+			RepoTags:  image.RepoTags,
+			SizeBytes: image.Size,
+			Created:   image.Created,
+			Dangling:  image.Dangling,
 		})
 	}
 
 	return DockerSnapshot{
 		Daemon: DockerDaemonSummary{
-			ServerVersion:     info.ServerVersion,
-			ApiVersion:        info.ApiVersion,
 			OperatingSystem:   info.OperatingSystem,
-			KernelVersion:     info.KernelVersion,
 			Architecture:      info.Architecture,
-			DockerRootDir:     info.DockerRootDir,
 			Driver:            info.Driver,
 			NCPU:              info.NCPU,
 			MemTotalBytes:     info.MemTotal,
@@ -1194,27 +1125,22 @@ func (s *Server) composeProjectLabel(ctx context.Context) (string, error) {
 func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
 	_ = ctx
 	hostname, _ := os.Hostname()
-	uptime, _ := readUptime(s.cfg.HostProc)
 	load, _ := readLoadAverage(s.cfg.HostProc)
 	memory, _ := readMemInfo(s.cfg.HostProc)
 	disks, _ := readMountsAndDisks(s.cfg.HostProc, s.cfg.HostRoot)
 	network, _ := readNetworkStats(s.cfg.HostProc)
 	processes, _ := countProcesses(s.cfg.HostProc)
-	kernel, _ := readKernelVersion(s.cfg.HostProc)
 	osName, _ := readOSRelease(s.cfg.HostRoot, s.cfg.HostProc)
 
 	return SystemSnapshot{
-		Hostname:      hostname,
-		OS:            osName,
-		Kernel:        kernel,
-		Architecture:  runtime.GOARCH,
-		UptimeSeconds: uptime,
-		CPUCount:      runtime.NumCPU(),
-		LoadAverage:   load,
-		Memory:        memory,
-		Processes:     processes,
-		Disks:         disks,
-		Network:       network,
+		Hostname:    hostname,
+		OS:          osName,
+		CPUCount:    runtime.NumCPU(),
+		LoadAverage: load,
+		Memory:      memory,
+		Processes:   processes,
+		Disks:       disks,
+		Network:     network,
 	}, nil
 }
 
@@ -1235,17 +1161,11 @@ func (s *Server) requestDocker(ctx context.Context, path string, out any) error 
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func mapPorts(ports []dockerPort) []PortSummary {
-	result := make([]PortSummary, 0, len(ports))
-	for _, port := range ports {
-		result = append(result, PortSummary{
-			PrivatePort: port.PrivatePort,
-			PublicPort:  port.PublicPort,
-			Type:        port.Type,
-			IP:          port.IP,
-		})
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
 	}
-	return result
+	return id
 }
 
 func cleanDockerName(names []string) string {
@@ -1315,13 +1235,6 @@ func isAnonymousImage(image dockerImage) bool {
 	return allAnonymous
 }
 
-func trimCommand(command string) string {
-	command = strings.TrimSpace(command)
-	command = strings.TrimPrefix(command, "[")
-	command = strings.TrimSuffix(command, "]")
-	return strings.ReplaceAll(command, "\"", "")
-}
-
 func buildDiagram(system SystemSnapshot, docker DockerSnapshot) string {
 	var b strings.Builder
 	b.WriteString("host linux system\n")
@@ -1353,14 +1266,6 @@ func writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal server error"})
 }
 
-func readKernelVersion(procRoot string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(procRoot, "version"))
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
 func readOSRelease(root, procRoot string) (string, error) {
 	paths := []string{
 		filepath.Join(root, "etc", "os-release"),
@@ -1379,18 +1284,6 @@ func readOSRelease(root, procRoot string) (string, error) {
 		}
 	}
 	return "Linux", nil
-}
-
-func readUptime(procRoot string) (float64, error) {
-	data, err := os.ReadFile(filepath.Join(procRoot, "uptime"))
-	if err != nil {
-		return 0, err
-	}
-	fields := strings.Fields(string(data))
-	if len(fields) == 0 {
-		return 0, fmt.Errorf("uptime data unavailable")
-	}
-	return strconv.ParseFloat(fields[0], 64)
 }
 
 func readLoadAverage(procRoot string) ([]float64, error) {
@@ -1477,12 +1370,11 @@ func readMountsAndDisks(procRoot, root string) ([]DiskSnapshot, error) {
 			continue
 		}
 		disks = append(disks, DiskSnapshot{
-			MountPoint:  mountPoint,
-			Filesystem:  fields[0],
 			TotalBytes:  stat.total,
 			FreeBytes:   stat.free,
 			UsedBytes:   stat.used,
 			UsedPercent: stat.usedPercent,
+			mountPoint:  mountPoint,
 		})
 		if len(disks) >= 4 {
 			break
@@ -1520,14 +1412,13 @@ func readNetworkStats(procRoot string) ([]NetworkSnapshot, error) {
 		if len(parts) != 2 {
 			continue
 		}
-		iface := strings.TrimSpace(parts[0])
 		fields := strings.Fields(strings.TrimSpace(parts[1]))
 		if len(fields) < 16 {
 			continue
 		}
 		rx, _ := strconv.ParseUint(fields[0], 10, 64)
 		tx, _ := strconv.ParseUint(fields[8], 10, 64)
-		stats = append(stats, NetworkSnapshot{Interface: iface, Received: rx, Sent: tx})
+		stats = append(stats, NetworkSnapshot{Received: rx, Sent: tx})
 	}
 	return stats, nil
 }
