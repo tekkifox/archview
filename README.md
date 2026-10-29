@@ -258,6 +258,86 @@ services:
 
 The socket proxy is the only container that mounts `/var/run/docker.sock`. ArchView only needs read-only host mounts.
 
+## This deployment: archview.rossmoney.me
+
+`docker-compose.portainer.yml` is the stack used for `archview.rossmoney.me`. It
+joins the external `proxy` network at a fixed address (`172.18.0.10`) and
+listens on port `8083`; the host's openresty reverse proxy terminates TLS for
+`archview.rossmoney.me` and forwards to that address. ArchView trusts the
+proxy's `X-Forwarded-Proto`/`X-Forwarded-Host` headers, which is why the login
+redirect sent to the identity provider uses `https://` and the public hostname
+instead of the container's own address.
+
+`stack.env` for that stack:
+
+```ini
+PORT="8083"
+
+DOCKER_HOST=tcp://socket-proxy:2375
+DOCKER_API_VERSION="v1.44"
+HOST_PROC=/host/proc
+HOST_SYS=/host/sys
+HOST_ROOT=/host/root
+
+# --- Login ---------------------------------------------------------------
+# OIDC issuer of the identity provider (Google, Entra ID, Keycloak, ...).
+AUTH_MODE=oidc
+OAUTH_ISSUER=https://accounts.example.com
+OAUTH_CLIENT_ID=archview
+OAUTH_CLIENT_SECRET=replace-me
+# Must match the callback registered with the provider byte for byte.
+OAUTH_REDIRECT_URL=https://archview.rossmoney.me/auth/callback
+OAUTH_SCOPES="openid profile email"
+# Optional: restrict who may log in.
+OAUTH_ALLOWED_EMAILS=you@example.com
+# Where the browser lands after logging in ("/" shows the JSON service index).
+OAUTH_POST_LOGIN_REDIRECT=/
+
+# 32+ random bytes: openssl rand -base64 48. Identical on every replica.
+SESSION_SECRET=replace-with-at-least-32-random-bytes
+SESSION_TTL=8h
+SESSION_COOKIE_SECURE=true
+SESSION_COOKIE_SAMESITE=lax
+
+# Server-to-server key used by the rossmoney.me CMS (/api/architecture proxy).
+API_KEYS=rossmoney-me:replace-with-a-long-random-key
+
+TRUST_PROXY_HEADERS=true
+```
+
+Steps to bring it up:
+
+1. Register `https://archview.rossmoney.me/auth/callback` as the redirect URI of
+   a confidential (web) client with the provider, requesting the
+   `openid profile email` scopes.
+2. Put the values above in the stack's `stack.env` in Portainer and deploy
+   `docker-compose.portainer.yml`.
+3. Point the openresty server block for `archview.rossmoney.me` at
+   `172.18.0.10:8083` and pass `Host`, `X-Forwarded-Proto` and
+   `X-Forwarded-For` through unchanged.
+4. Copy the `API_KEYS` value (the part after `rossmoney-me:`) into the CMS stack
+   as `ARCHVIEW_API_KEY`, with `ARCHVIEW_URL=https://archview.rossmoney.me`.
+
+Verify the boundary:
+
+```bash
+# Anonymous API call is rejected and advertises the scheme.
+curl -sI https://archview.rossmoney.me/api/architecture | grep -i www-authenticate
+
+# The login entry point hands the browser to the identity provider.
+curl -sI https://archview.rossmoney.me/auth/login | grep -i location
+
+# The CMS key gets a snapshot without a browser session.
+curl -s -H "Authorization: Bearer $ARCHVIEW_API_KEY" \
+  "https://archview.rossmoney.me/api/architecture?project=image-mosaic" | head -c 200
+```
+
+The public site never calls ArchView from the browser: cross-site requests would
+not carry the session cookie, so the CMS reaches the API from its own server
+through `/api/architecture` and forwards the response. Open
+`https://archview.rossmoney.me/auth/login` directly in a browser to use the
+interactive login.
+
 ## Microservice notes
 
 - **Stateless**: no database, no local session store, no bundled UI. Scale horizontally behind a load balancer with the same `SESSION_SECRET`.
