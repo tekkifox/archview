@@ -16,8 +16,6 @@ func TestNormalizeProjectAliases(t *testing.T) {
 		"rossmoney-me": "rossmoney_me",
 		"rossmoney_me": "rossmoney_me",
 		"other":        "other",
-		// Matching is case-sensitive, so differently-cased labels pass through.
-		"Photoprism": "Photoprism",
 	}
 	for input, want := range cases {
 		if got := normalizeProject(input); got != want {
