@@ -40,6 +40,26 @@ Protected endpoints return `401` with a `WWW-Authenticate: Bearer` header when n
 
 `FULL_DOCKER_PROJECTS` widens the `/api/architecture` response for selected projects. It is a comma-separated list of project labels — not newline-separated. Labels are matched after alias normalisation, so `image-mosaic` and `photoprism` both arrive as the canonical `travelling`; matching is case-sensitive and surrounding spaces around each entry are trimmed. Because matching happens on the normalised label, `FULL_DOCKER_PROJECTS` must list `travelling`, not the alias. When a project matches, the endpoint returns the **full host and Docker overview** (every container and image) instead of the project-scoped snapshot. When unset, every project stays scoped.
 
+Every overview and architecture response also carries an `endpoints` array with
+absolute URLs for the instance that served the request, so a consumer can
+discover the rest of the API:
+
+```json
+"endpoints": [
+  {"name": "overview", "url": "https://archview.example.com/api/overview"},
+  {"name": "architecture", "url": "https://archview.example.com/api/architecture?project=<name>"},
+  {"name": "docker", "url": "https://archview.example.com/api/docker"},
+  {"name": "system", "url": "https://archview.example.com/api/system"},
+  {"name": "healthz", "url": "https://archview.example.com/healthz"},
+  {"name": "readyz", "url": "https://archview.example.com/readyz"},
+  {"name": "docs", "url": "https://archview.example.com/docs"}
+]
+```
+
+The URLs follow the request's scheme and host. `X-Forwarded-Proto` and
+`X-Forwarded-Host` are honoured only when `TRUST_PROXY_HEADERS=true`, which is
+the same rule used for login redirects and cookies.
+
 ## Quick start
 
 ```bash

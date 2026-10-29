@@ -61,6 +61,14 @@ type OverviewResponse struct {
 	Docker      DockerSnapshot   `json:"docker"`
 	System      SystemSnapshot   `json:"system"`
 	Extra       map[string]any   `json:"extra,omitempty"`
+	Endpoints   []EndpointLink   `json:"endpoints,omitempty"`
+}
+
+// EndpointLink names another API endpoint and gives its absolute URL for the
+// instance that served the request.
+type EndpointLink struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 type DockerSnapshot struct {
@@ -450,7 +458,122 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	resp.Endpoints = s.endpointLinks(r)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// endpointLinks lists the API endpoints for the instance that served r. URLs
+// are absolute so a consumer can follow them without knowing how it reached
+// ArchView.
+func (s *Server) endpointLinks(r *http.Request) []EndpointLink {
+	base := s.requestBaseURL(r)
+	if base == "" {
+		return nil
+	}
+	return []EndpointLink{
+		{Name: "overview", URL: base + "/api/overview"},
+		{Name: "architecture", URL: base + "/api/architecture?project=<name>"},
+		{Name: "docker", URL: base + "/api/docker"},
+		{Name: "system", URL: base + "/api/system"},
+		{Name: "healthz", URL: base + "/healthz"},
+		{Name: "readyz", URL: base + "/readyz"},
+		{Name: "docs", URL: base + "/docs"},
+	}
+}
+
+// requestBaseURL derives the absolute origin that served r. Forwarded headers
+// are honoured only when TRUST_PROXY_HEADERS is enabled, matching the auth
+// code's cookie and redirect handling.
+func (s *Server) requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	host := r.Host
+	if s.cfg.Auth.TrustProxyHeaders {
+		if forwarded := strings.ToLower(firstHeaderValue(r.Header.Get("X-Forwarded-Proto"))); forwarded == "http" || forwarded == "https" {
+			scheme = forwarded
+		}
+		if forwarded := firstHeaderValue(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+			if normalized, ok := normalizeHost(forwarded); ok {
+				host = normalized
+			}
+		}
+	}
+	normalized, ok := normalizeHost(host)
+	if !ok {
+		return ""
+	}
+	return scheme + "://" + normalized
+}
+
+// normalizeHost accepts only a bare host with an optional port. It rejects
+// schemes, paths, userinfo, queries and fragments so a forwarded header cannot
+// change where a link points.
+func normalizeHost(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsAny(raw, "/\\?#@ \t\r\n") {
+		return "", false
+	}
+
+	host := raw
+	port := ""
+	if strings.HasPrefix(raw, "[") {
+		end := strings.IndexByte(raw, ']')
+		if end < 0 {
+			return "", false
+		}
+		host = raw[:end+1]
+		rest := raw[end+1:]
+		if rest != "" {
+			if !strings.HasPrefix(rest, ":") {
+				return "", false
+			}
+			port = rest[1:]
+		}
+	} else if colons := strings.Count(raw, ":"); colons == 1 {
+		idx := strings.IndexByte(raw, ':')
+		host, port = raw[:idx], raw[idx+1:]
+	} else if colons > 1 {
+		// Unbracketed IPv6 literals are not valid in a Host header.
+		return "", false
+	}
+
+	if host == "" {
+		return "", false
+	}
+	if port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 {
+			return "", false
+		}
+	} else if strings.HasSuffix(raw, ":") {
+		return "", false
+	}
+
+	if strings.HasPrefix(host, "[") {
+		if !strings.HasSuffix(host, "]") || net.ParseIP(host[1:len(host)-1]) == nil {
+			return "", false
+		}
+	} else {
+		if strings.HasPrefix(host, ".") || strings.HasSuffix(host, "-") || strings.Contains(host, "..") {
+			return "", false
+		}
+		for _, char := range host {
+			if char == '.' || char == '-' || char == '_' ||
+				(char >= '0' && char <= '9') ||
+				(char >= 'a' && char <= 'z') ||
+				(char >= 'A' && char <= 'Z') {
+				continue
+			}
+			return "", false
+		}
+	}
+
+	if port != "" {
+		return strings.ToLower(host) + ":" + port, true
+	}
+	return strings.ToLower(host), true
 }
 
 func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
@@ -478,6 +601,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 					writeError(w, err)
 					return
 				}
+				resp.Endpoints = s.endpointLinks(r)
 				m, err := attachTelemetryToOverview(resp)
 				if err != nil {
 					writeJSON(w, http.StatusOK, resp)
@@ -495,6 +619,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	resp.Endpoints = s.endpointLinks(r)
 	m, err := attachTelemetryToOverview(resp)
 	if err != nil {
 		writeJSON(w, http.StatusOK, resp)
