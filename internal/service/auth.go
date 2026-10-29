@@ -144,24 +144,26 @@ type AuthConfig struct {
 type introspectionResponse struct {
 	// Active is a pointer because Google's tokeninfo endpoint omits it entirely;
 	// an absent flag is inferred from the expiry instead.
-	Active           *bool           `json:"active"`
-	Scope            string          `json:"scope"`
-	Scp              json.RawMessage `json:"scp"`
-	Sub              string          `json:"sub"`
-	Username         string          `json:"username"`
-	Email            string          `json:"email"`
-	ClientID         string          `json:"client_id"`
-	Azp              string          `json:"azp"`
-	Aud              json.RawMessage `json:"aud"`
-	Iss              string          `json:"iss"`
-	Exp              int64           `json:"exp"`
-	Iat              int64           `json:"iat"`
-	Nbf              int64           `json:"nbf"`
-	ExpiresIn        int64           `json:"expires_in"`
-	TokenType        string          `json:"token_type"`
-	GrantType        string          `json:"grant_type"`
-	Error            string          `json:"error"`
-	ErrorDescription string          `json:"error_description"`
+	Active   *bool           `json:"active"`
+	Scope    string          `json:"scope"`
+	Scp      json.RawMessage `json:"scp"`
+	Sub      string          `json:"sub"`
+	Username string          `json:"username"`
+	Email    string          `json:"email"`
+	ClientID string          `json:"client_id"`
+	Azp      string          `json:"azp"`
+	Aud      json.RawMessage `json:"aud"`
+	Iss      string          `json:"iss"`
+	// Numeric claims are decoded as json.Number so providers that return
+	// quoted numeric strings (Google's tokeninfo does) are accepted too.
+	Exp              json.Number `json:"exp"`
+	Iat              json.Number `json:"iat"`
+	Nbf              json.Number `json:"nbf"`
+	ExpiresIn        json.Number `json:"expires_in"`
+	TokenType        string      `json:"token_type"`
+	GrantType        string      `json:"grant_type"`
+	Error            string      `json:"error"`
+	ErrorDescription string      `json:"error_description"`
 }
 
 type providerMetadata struct {
@@ -818,6 +820,16 @@ func (a *AuthManager) safeRedirect(r *http.Request, target string) string {
 	if target == "" {
 		return fallback
 	}
+	// Browsers strip tabs, newlines and carriage returns from URLs, so a
+	// target such as "/\t/evil.example" would become "//evil.example" after
+	// the browser rewrites it. Reject control characters before following the
+	// relative-path branch, including percent-encoded ones.
+	if containsControlCharacter(target) {
+		return fallback
+	}
+	if decoded, err := url.PathUnescape(target); err == nil && containsControlCharacter(decoded) {
+		return fallback
+	}
 	if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") && !strings.Contains(target, "\\") {
 		return target
 	}
@@ -840,6 +852,18 @@ func (a *AuthManager) safeRedirect(r *http.Request, target string) string {
 		}
 	}
 	return fallback
+}
+
+// containsControlCharacter reports whether value contains an ASCII control
+// character (< 0x20 or 0x7f). Browsers silently strip several of these from
+// URLs, which can turn a relative redirect into a protocol-relative one.
+func containsControlCharacter(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func redirectPathAllowed(allowed, path string) bool {
@@ -975,7 +999,17 @@ func bearerClientID(claims map[string]any) string {
 // isMachineToken distinguishes an application token (client credentials) from a
 // token that represents a human. Machine tokens are exempt from the
 // email/domain allowlist and are governed by MachineClients/MachineScopes.
+//
+// A bare client_id claim is not evidence of a machine caller: some providers
+// attach it to user tokens too. A token is only a machine token when it carries
+// a client-credentials grant claim or matches a configured machine client or
+// scope, and it never carries user claims.
 func (a *AuthManager) isMachineToken(claims map[string]any) bool {
+	for _, name := range []string{a.cfg.EmailClaim, "email", "username", "preferred_username"} {
+		if claimString(claims, name) != "" {
+			return false
+		}
+	}
 	for _, name := range []string{"gty", "grant_type"} {
 		if value := claimString(claims, name); strings.EqualFold(value, "client_credentials") || strings.EqualFold(value, "client-credentials") {
 			return true
@@ -984,15 +1018,11 @@ func (a *AuthManager) isMachineToken(claims map[string]any) bool {
 	if value := claimString(claims, "token_type"); strings.EqualFold(value, "client_credentials") {
 		return true
 	}
-	if claimString(claims, a.cfg.EmailClaim) != "" || claimString(claims, "username") != "" {
-		return false
-	}
-	if len(a.cfg.MachineScopes) > 0 && scopeContainsAll(claimScope(claims), a.cfg.MachineScopes) {
+	clientID := bearerClientID(claims)
+	if len(a.cfg.MachineClients) > 0 && containsFold(a.cfg.MachineClients, clientID) {
 		return true
 	}
-	// client_id is only set on application tokens (azp is also used by ID
-	// tokens), so its presence is safe evidence of a machine caller.
-	return claimString(claims, "client_id") != ""
+	return len(a.cfg.MachineScopes) > 0 && scopeContainsAll(claimScope(claims), a.cfg.MachineScopes)
 }
 
 // checkAudience enforces the accepted audience set for the token kind. Human
@@ -1638,9 +1668,26 @@ func (a *AuthManager) introspect(ctx context.Context, token string) (map[string]
 
 // claims converts an introspection response into JWT-style claims.
 func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
-	expiresAt := r.Exp
-	if expiresAt == 0 && r.ExpiresIn > 0 {
-		expiresAt = now.Add(time.Duration(r.ExpiresIn) * time.Second).Unix()
+	exp, err := numberAsInt64(r.Exp)
+	if err != nil {
+		return nil, fmt.Errorf("%w: introspection exp is not a number: %v", errInvalidToken, err)
+	}
+	iat, err := numberAsInt64(r.Iat)
+	if err != nil {
+		return nil, fmt.Errorf("%w: introspection iat is not a number: %v", errInvalidToken, err)
+	}
+	nbf, err := numberAsInt64(r.Nbf)
+	if err != nil {
+		return nil, fmt.Errorf("%w: introspection nbf is not a number: %v", errInvalidToken, err)
+	}
+	expiresIn, err := numberAsInt64(r.ExpiresIn)
+	if err != nil {
+		return nil, fmt.Errorf("%w: introspection expires_in is not a number: %v", errInvalidToken, err)
+	}
+
+	expiresAt := exp
+	if expiresAt == 0 && expiresIn > 0 {
+		expiresAt = now.Add(time.Duration(expiresIn) * time.Second).Unix()
 	}
 	if expiresAt == 0 {
 		return nil, fmt.Errorf("%w: introspection response has no expiry", errInvalidToken)
@@ -1648,7 +1695,7 @@ func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
 	if now.After(time.Unix(expiresAt, 0).Add(jwtClockSkew)) {
 		return nil, fmt.Errorf("%w: token expired", errInvalidToken)
 	}
-	if r.Nbf != 0 && now.Add(jwtClockSkew).Before(time.Unix(r.Nbf, 0)) {
+	if nbf != 0 && now.Add(jwtClockSkew).Before(time.Unix(nbf, 0)) {
 		return nil, fmt.Errorf("%w: token not valid yet", errInvalidToken)
 	}
 
@@ -1668,11 +1715,11 @@ func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
 	if r.Email != "" {
 		claims["email"] = r.Email
 	}
-	if r.Iat != 0 {
-		claims["iat"] = r.Iat
+	if iat != 0 {
+		claims["iat"] = iat
 	}
-	if r.Nbf != 0 {
-		claims["nbf"] = r.Nbf
+	if nbf != 0 {
+		claims["nbf"] = nbf
 	}
 	if len(r.Aud) > 0 {
 		var aud any
@@ -1698,6 +1745,15 @@ func (r introspectionResponse) claims(now time.Time) (map[string]any, error) {
 		}
 	}
 	return claims, nil
+}
+
+// numberAsInt64 converts an introspection numeric claim to seconds. An empty
+// json.Number means the provider omitted the claim.
+func numberAsInt64(value json.Number) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	return value.Int64()
 }
 
 // audience is checked separately because machine tokens may use a different

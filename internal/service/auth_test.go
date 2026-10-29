@@ -3,6 +3,8 @@ package service
 import (
 	"crypto/rsa"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -508,6 +510,50 @@ func TestClientCredentialsJWTAuthentication(t *testing.T) {
 	}
 }
 
+// TestHumanTokenWithClientIDUsesAllowlist ensures a client_id claim alone does
+// not turn a human token into a machine token and skip the user allowlists.
+func TestHumanTokenWithClientIDUsesAllowlist(t *testing.T) {
+	provider := newFakeProvider(t)
+	// The default config allows ross@example.com and has no machine allowlists.
+	config := testAuthConfig(provider.server.URL)
+	handler := newAuthServer(t, config, nil)
+
+	now := time.Now()
+	claims := map[string]any{
+		"iss":                provider.server.URL,
+		"aud":                testClientID,
+		"sub":                "user-1",
+		"client_id":          "browser-app",
+		"preferred_username": "intruder@example.com",
+		"iat":                now.Unix(),
+		"exp":                now.Add(time.Hour).Unix(),
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+	request.Header.Set("Authorization", "Bearer "+signRS256(t, provider.key, provider.kid, claims))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	// A token with no user or machine evidence is not a machine token either.
+	claims = map[string]any{
+		"iss":       provider.server.URL,
+		"aud":       testClientID,
+		"sub":       "user-1",
+		"client_id": "browser-app",
+		"iat":       now.Unix(),
+		"exp":       now.Add(time.Hour).Unix(),
+	}
+	request = httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+	request.Header.Set("Authorization", "Bearer "+signRS256(t, provider.key, provider.kid, claims))
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("client_id-only token status = %d, want 401 (body %s)", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestClientCredentialsEnforcesAllowlists(t *testing.T) {
 	provider := newFakeProvider(t)
 	config := testAuthConfig(provider.server.URL)
@@ -684,6 +730,62 @@ func TestGoogleStyleIntrospectionUsesGET(t *testing.T) {
 	}
 }
 
+// TestIntrospectionAcceptsQuotedNumericClaims covers providers that encode
+// numeric introspection fields as JSON strings. Google's tokeninfo endpoint
+// returns exp and expires_in that way, and it must not reject valid tokens or
+// ignore an expired one.
+func TestIntrospectionAcceptsQuotedNumericClaims(t *testing.T) {
+	provider := newFakeProvider(t)
+	now := time.Now()
+
+	var (
+		mu   sync.Mutex
+		body string
+	)
+	introspection := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		payload := body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	t.Cleanup(introspection.Close)
+
+	cases := []struct {
+		name string
+		exp  time.Time
+		want int
+	}{
+		{name: "accepted", exp: now.Add(time.Hour), want: http.StatusOK},
+		{name: "expired", exp: now.Add(-time.Hour), want: http.StatusUnauthorized},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			body = fmt.Sprintf(
+				`{"exp":"%d","iat":"%d","nbf":"%d","expires_in":"3568","aud":"%s","sub":"1234567890","scope":"archview:read","azp":"service-account"}`,
+				tc.exp.Unix(), now.Add(-time.Minute).Unix(), now.Add(-time.Minute).Unix(), testClientID,
+			)
+			mu.Unlock()
+
+			config := testAuthConfig(provider.server.URL)
+			config.IntrospectionURL = introspection.URL
+			config.IntrospectionMethod = http.MethodGet
+			config.IntrospectionAuthMethod = "none"
+			config.MachineScopes = []string{"archview:read"}
+			handler := newAuthServer(t, config, nil)
+
+			request := httptest.NewRequest(http.MethodGet, "http://archview.test/api/system", nil)
+			request.Header.Set("Authorization", "Bearer ya29.quoted-token")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, tc.want, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestAuthConfigAndJSONLogin(t *testing.T) {
 	provider := newFakeProvider(t)
 	handler := newAuthServer(t, testAuthConfig(provider.server.URL), nil)
@@ -737,6 +839,12 @@ func TestSafeRedirectRejectsOpenRedirects(t *testing.T) {
 		"https://archview.example/ok": "https://archview.example/ok",
 		"https://app.example/after/1": "https://app.example/after/1",
 		"https://app.example/other":   "/",
+		"/\t/evil.example":            "/",
+		"/\n/evil.example":            "/",
+		"/\r/evil.example":            "/",
+		"/%09/evil.example":           "/",
+		"/%0a/evil.example":           "/",
+		"/%0d/evil.example":           "/",
 	}
 	for input, want := range cases {
 		if got := manager.safeRedirect(request, input); got != want {
