@@ -90,26 +90,37 @@ jobs:
           # main redeploys the production stack, dev redeploys the dev stack;
           # any other ref triggers neither.
           case "${GITHUB_REF_NAME:-}" in
-            main) urls_raw="${PORTAINER_WEBHOOK_URLS:-} ${PORTAINER_WEBHOOK_URL:-}" ;;
-            dev) urls_raw="${PORTAINER_DEV_WEBHOOK_URLS:-} ${PORTAINER_DEV_WEBHOOK_URL:-}" ;;
+            main) urls_raw="${PORTAINER_WEBHOOK_URLS:-}"$'\n'"${PORTAINER_WEBHOOK_URL:-}" ;;
+            dev) urls_raw="${PORTAINER_DEV_WEBHOOK_URLS:-}"$'\n'"${PORTAINER_DEV_WEBHOOK_URL:-}" ;;
             *) urls_raw="" ;;
           esac
+          # Values can arrive comma-separated, newline-separated, wrapped in quotes,
+          # or with a trailing carriage return after a copy/paste. Normalise them
+          # before handing them to curl, which rejects anything malformed outright.
+          urls=$(printf '%s' "$urls_raw" \
+            | tr ',\r' '\n\n' \
+            | tr -d '"' \
+            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            | grep -v '^$' || true)
           failures=0
           echo "Triggering Portainer webhooks..."
-          echo "$urls_raw" | tr ',' '\n' | while read -r url; do
-            url_trim=$(echo "$url" | xargs)
-            if [ -z "$url_trim" ]; then
-              continue
-            fi
-            echo "POST $url_trim"
-            status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url_trim" || true)
-            if [ "$status" != "200" ] && [ "$status" != "202" ] && [ "$status" != "204" ] && [ "$status" != "409" ]; then
-              echo "Portainer webhook $url_trim failed with HTTP $status"
-              failures=$((failures+1))
-            else
-              echo "Portainer webhook $url_trim triggered OK (HTTP $status)"
-            fi
-          done
+          if [ -z "$urls" ]; then
+            echo "No Portainer webhook configured for ${GITHUB_REF_NAME:-this ref}; nothing to do."
+            exit 0
+          fi
+          while IFS= read -r url; do
+            echo "POST $url"
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$url" || true)
+            case "$status" in
+              200|202|204|409)
+                echo "Portainer webhook triggered OK (HTTP $status)"
+                ;;
+              *)
+                echo "Portainer webhook $url failed with HTTP $status"
+                failures=$((failures + 1))
+                ;;
+            esac
+          done <<< "$urls"
           if [ "$failures" -gt 0 ]; then
             echo "One or more Portainer webhooks failed ($failures)"
             exit 1
