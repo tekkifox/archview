@@ -7,6 +7,25 @@ import (
 	"time"
 )
 
+func TestNormalizeProjectAliases(t *testing.T) {
+	cases := map[string]string{
+		"travelling":   "image-mosaic",
+		"image-mosaic": "image-mosaic",
+		"photoprism":   "image-mosaic",
+		"rossmoney":    "rossmoney_me",
+		"rossmoney-me": "rossmoney_me",
+		"rossmoney_me": "rossmoney_me",
+		"other":        "other",
+		// Matching is case-sensitive, so differently-cased labels pass through.
+		"Photoprism": "Photoprism",
+	}
+	for input, want := range cases {
+		if got := normalizeProject(input); got != want {
+			t.Errorf("normalizeProject(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestCORSOnlyAllowsConfiguredOrigins(t *testing.T) {
 	handler := newAuthServer(t, AuthConfig{Mode: authModeNone}, []string{"https://app.example"})
 
