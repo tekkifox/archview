@@ -57,7 +57,6 @@ type OverviewResponse struct {
 	Services    []ServiceSummary `json:"services"`
 	Nodes       []NodeSummary    `json:"nodes"`
 	Regions     []string         `json:"regions"`
-	Diagram     string           `json:"diagram"`
 	Docker      DockerSnapshot   `json:"docker"`
 	System      SystemSnapshot   `json:"system"`
 	Extra       map[string]any   `json:"extra,omitempty"`
@@ -254,7 +253,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/auth/logout", s.auth.HandleLogout)
 	mux.HandleFunc("/auth/user", s.auth.HandleUser)
 	mux.HandleFunc("/auth/config", s.auth.HandleConfig)
-	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
 	mux.HandleFunc("/api/docker", s.handleDocker)
 	mux.HandleFunc("/api/system", s.handleSystem)
@@ -341,8 +339,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			"/healthz",
 			"/readyz",
 			"/docs",
-			"/api/overview",
-			"/api/architecture?project=<name>",
+			"/api/architecture",
 			"/api/docker",
 			"/api/system",
 		},
@@ -415,63 +412,25 @@ func (s *Server) swaggerSpec(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(docs.OpenAPISpec)
 }
 
-func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	resp, err := s.buildOverview(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	s.attachEndpoints(&resp, r)
-	writeJSON(w, http.StatusOK, resp)
+// attachEndpoints records the endpoint links on resp.
+func attachEndpoints(resp *OverviewResponse, baseURL string) {
+	resp.Endpoints = endpointLinks(baseURL)
 }
 
-// attachEndpoints records the endpoint links on resp and repeats them at the
-// end of the diagram. Both representations are produced from the same slice so
-// they cannot drift.
-func (s *Server) attachEndpoints(resp *OverviewResponse, r *http.Request) {
-	links := s.endpointLinks(r)
-	resp.Endpoints = links
-	resp.Diagram = appendEndpointsBlock(resp.Diagram, links)
-}
-
-// appendEndpointsBlock appends the endpoint list to a diagram, matching its
-// bullet style. The diagram is returned unchanged when there are no links.
-func appendEndpointsBlock(diagram string, links []EndpointLink) string {
-	if len(links) == 0 {
-		return diagram
-	}
-	var b strings.Builder
-	b.WriteString(diagram)
-	if diagram != "" && !strings.HasSuffix(diagram, "\n") {
-		b.WriteString("\n")
-	}
-	b.WriteString("\nendpoints\n")
-	for _, link := range links {
-		b.WriteString("  - ")
-		b.WriteString(link.Name)
-		b.WriteString(": ")
-		b.WriteString(link.URL)
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-// endpointLinks lists the API endpoints for the instance that served r. URLs
-// are absolute so a consumer can follow them without knowing how it reached
+// endpointLinks lists the API endpoints for the instance at baseURL. URLs are
+// absolute so a consumer can follow them without knowing how it reached
 // ArchView.
-func (s *Server) endpointLinks(r *http.Request) []EndpointLink {
-	base := s.requestBaseURL(r)
-	if base == "" {
+func endpointLinks(baseURL string) []EndpointLink {
+	if baseURL == "" {
 		return nil
 	}
 	return []EndpointLink{
-		{Name: "overview", URL: base + "/api/overview"},
-		{Name: "architecture", URL: base + "/api/architecture?project=<name>"},
-		{Name: "docker", URL: base + "/api/docker"},
-		{Name: "system", URL: base + "/api/system"},
-		{Name: "healthz", URL: base + "/healthz"},
-		{Name: "readyz", URL: base + "/readyz"},
-		{Name: "docs", URL: base + "/docs"},
+		{Name: "architecture", URL: baseURL + "/api/architecture"},
+		{Name: "docker", URL: baseURL + "/api/docker"},
+		{Name: "system", URL: baseURL + "/api/system"},
+		{Name: "healthz", URL: baseURL + "/healthz"},
+		{Name: "readyz", URL: baseURL + "/readyz"},
+		{Name: "docs", URL: baseURL + "/docs"},
 	}
 }
 
@@ -581,6 +540,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 
 	// Normalize common aliases
 	project = normalizeProject(project)
+	baseURL := s.requestBaseURL(r)
 
 	// Determine whether this project should return a full Docker snapshot.
 	// Controlled via env FULL_DOCKER_PROJECTS: a comma-separated list of
@@ -595,7 +555,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 					writeError(w, err)
 					return
 				}
-				s.attachEndpoints(&resp, r)
+				attachEndpoints(&resp, baseURL)
 				m, err := attachTelemetryToOverview(resp)
 				if err != nil {
 					writeJSON(w, http.StatusOK, resp)
@@ -613,7 +573,7 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	s.attachEndpoints(&resp, r)
+	attachEndpoints(&resp, baseURL)
 	m, err := attachTelemetryToOverview(resp)
 	if err != nil {
 		writeJSON(w, http.StatusOK, resp)
@@ -696,7 +656,6 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 	}
 
 	regions := []string{"host", system.OS, docker.Daemon.Architecture}
-	diagram := buildDiagram(system, docker)
 
 	return OverviewResponse{
 		Title:       "Docker + Linux host overview",
@@ -709,7 +668,6 @@ func (s *Server) buildOverview(ctx context.Context) (OverviewResponse, error) {
 		Services:    services,
 		Nodes:       nodes,
 		Regions:     regions,
-		Diagram:     diagram,
 		Docker:      docker,
 		System:      system,
 		Extra: map[string]any{
@@ -762,7 +720,6 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) 
 	}
 
 	regions := []string{projectLabel, system.OS, docker.Daemon.Architecture}
-	diagram := buildDiagram(system, docker)
 
 	return OverviewResponse{
 		Title:       "Docker + Linux host overview",
@@ -775,7 +732,6 @@ func (s *Server) buildProjectOverview(ctx context.Context, projectLabel string) 
 		Services:    services,
 		Nodes:       nodes,
 		Regions:     regions,
-		Diagram:     diagram,
 		Docker:      docker,
 		System:      system,
 		Extra: map[string]any{
@@ -1233,24 +1189,6 @@ func isAnonymousImage(image dockerImage) bool {
 		}
 	}
 	return allAnonymous
-}
-
-func buildDiagram(system SystemSnapshot, docker DockerSnapshot) string {
-	var b strings.Builder
-	b.WriteString("host linux system\n")
-	b.WriteString("  -> docker daemon\n")
-	if len(docker.Containers) == 0 {
-		b.WriteString("     -> no containers found\n")
-	} else {
-		for _, container := range docker.Containers {
-			b.WriteString("     -> container: ")
-			b.WriteString(container.Name)
-			b.WriteString(" (")
-			b.WriteString(container.State)
-			b.WriteString(")\n")
-		}
-	}
-	return b.String()
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

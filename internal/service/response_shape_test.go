@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -182,8 +183,17 @@ func TestDockerResponseUsesShortContainerID(t *testing.T) {
 }
 
 func TestOverviewResponseOmitsSensitiveFields(t *testing.T) {
-	handler := newResponseShapeServer(t).Routes()
-	body := string(getJSON(t, handler, "/api/overview"))
+	server := newResponseShapeServer(t)
+	response, err := server.buildOverview(context.Background())
+	if err != nil {
+		t.Fatalf("buildOverview: %v", err)
+	}
+	attachEndpoints(&response, "https://archview.example")
+	payload, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal overview response: %v", err)
+	}
+	body := string(payload)
 
 	for _, forbidden := range []string{
 		"ports",
@@ -199,6 +209,7 @@ func TestOverviewResponseOmitsSensitiveFields(t *testing.T) {
 		"mountPoint",
 		"filesystem",
 		"interface",
+		"diagram",
 	} {
 		if strings.Contains(body, `"`+forbidden+`"`) {
 			t.Errorf("overview response still contains removed field %q: %s", forbidden, body)
@@ -220,7 +231,6 @@ func TestOverviewResponseOmitsSensitiveFields(t *testing.T) {
 		"usedPercent",
 		"receivedBytes",
 		"sentBytes",
-		"diagram",
 		"endpoints",
 		"services",
 		"nodes",
@@ -231,11 +241,19 @@ func TestOverviewResponseOmitsSensitiveFields(t *testing.T) {
 		}
 	}
 
-	var response OverviewResponse
-	if err := json.Unmarshal([]byte(body), &response); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatalf("decode overview response fields: %v", err)
+	}
+	if _, ok := fields["diagram"]; ok {
+		t.Fatalf("overview response still has a diagram key: %s", body)
+	}
+
+	var decoded OverviewResponse
+	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("decode overview response: %v", err)
 	}
-	for _, node := range response.Nodes {
+	for _, node := range decoded.Nodes {
 		if node.Kind != "container" {
 			continue
 		}
@@ -252,12 +270,12 @@ func TestArchitectureResponseOmitsKernelFromTelemetry(t *testing.T) {
 	handler := newResponseShapeServer(t).Routes()
 	body := string(getJSON(t, handler, "/api/architecture?project=demo"))
 
-	for _, forbidden := range []string{"kernel", "mountPoint", "filesystem", "interface", "uptimeSeconds"} {
+	for _, forbidden := range []string{"kernel", "mountPoint", "filesystem", "interface", "uptimeSeconds", "diagram"} {
 		if strings.Contains(body, `"`+forbidden+`"`) {
 			t.Errorf("architecture response still contains removed field %q: %s", forbidden, body)
 		}
 	}
-	for _, retained := range []string{"telemetry", "hosts", "metrics", "diagram", "endpoints"} {
+	for _, retained := range []string{"telemetry", "hosts", "metrics", "endpoints"} {
 		if !strings.Contains(body, `"`+retained+`"`) {
 			t.Errorf("architecture response lost retained field %q: %s", retained, body)
 		}
