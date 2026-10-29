@@ -38,7 +38,7 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 
 Protected endpoints return `401` with a `WWW-Authenticate: Bearer` header when no valid credential is present.
 
-`FULL_DOCKER_PROJECTS` widens the `/api/architecture` response for selected projects. It is a comma-separated list of project labels — not newline-separated. Labels are matched after alias normalisation, so `travelling` and `photoprism` both arrive as `image-mosaic`; matching is case-sensitive and surrounding spaces around each entry are trimmed. When a project matches, the endpoint returns the **full host and Docker overview** (every container and image) instead of the project-scoped snapshot. When unset, every project stays scoped.
+`FULL_DOCKER_PROJECTS` widens the `/api/architecture` response for selected projects. It is a comma-separated list of project labels — not newline-separated. Labels are matched after alias normalisation, so `image-mosaic` and `photoprism` both arrive as the canonical `travelling`; matching is case-sensitive and surrounding spaces around each entry are trimmed. Because matching happens on the normalised label, `FULL_DOCKER_PROJECTS` must list `travelling`, not the alias. When a project matches, the endpoint returns the **full host and Docker overview** (every container and image) instead of the project-scoped snapshot. When unset, every project stays scoped.
 
 ## Quick start
 
@@ -427,7 +427,7 @@ TOKEN=$(curl -s -X POST "https://<tenant>.auth0.com/oauth/token" \
   -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$ARCHVIEW_CLIENT_ID\",\"client_secret\":\"$ARCHVIEW_CLIENT_SECRET\",\"audience\":\"https://archview.rossmoney.me/api\",\"scope\":\"archview:read\"}" \
   | jq -r .access_token)
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://archview.rossmoney.me/api/architecture?project=image-mosaic" | head -c 200
+  "https://archview.rossmoney.me/api/architecture?project=travelling" | head -c 200
 ```
 
 The public site never calls ArchView from the browser: cross-site requests would
@@ -450,7 +450,7 @@ Example request:
 ```bash
 curl -s \
   -H "Authorization: Bearer $TOKEN" \
-  https://archview.example.com/api/architecture?project=image-mosaic | jq .
+  https://archview.example.com/api/architecture?project=travelling | jq .
 ```
 
 ## Development

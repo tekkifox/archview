@@ -9,9 +9,9 @@ import (
 
 func TestNormalizeProjectAliases(t *testing.T) {
 	cases := map[string]string{
-		"travelling":   "image-mosaic",
-		"image-mosaic": "image-mosaic",
-		"photoprism":   "image-mosaic",
+		"travelling":   "travelling",
+		"image-mosaic": "travelling",
+		"photoprism":   "travelling",
 		"rossmoney":    "rossmoney_me",
 		"rossmoney-me": "rossmoney_me",
 		"rossmoney_me": "rossmoney_me",
