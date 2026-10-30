@@ -86,7 +86,7 @@ jobs:
 
   # Build linux/arm64 natively on a GitHub-hosted ARM runner. No emulation.
   build-arm64:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
