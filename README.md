@@ -367,8 +367,8 @@ The socket proxy is the only container that mounts `/var/run/docker.sock`. ArchV
 
 `docker-compose.portainer.yml` is the stack used for `archview.example.com`. It
 joins the external `proxy` network at a fixed address (`172.18.0.10`) and
-listens on port `8083`; the host's openresty reverse proxy terminates TLS for
-`archview.example.com` and forwards to that address. ArchView trusts the
+listens on port `8083`; the host's Nginx Proxy Manager instance terminates TLS
+for `archview.example.com` and forwards to that address. ArchView trusts the
 proxy's `X-Forwarded-Proto`/`X-Forwarded-Host` headers, which is why the login
 redirect sent to the identity provider uses `https://` and the public hostname
 instead of the container's own address.
@@ -433,8 +433,8 @@ Steps to bring it up:
    the API identifier.
 4. Put the values above in the stack's `stack.env` in Portainer and deploy
    `docker-compose.portainer.yml`.
-5. Point the openresty server block for `archview.example.com` at
-   `172.18.0.10:8083` and pass `Host`, `X-Forwarded-Proto` and
+5. Create a **proxy host** in Nginx Proxy Manager for `archview.example.com`
+   pointing at `172.18.0.10:8083`, and pass `Host`, `X-Forwarded-Proto` and
    `X-Forwarded-For` through unchanged.
 6. Store the CMS client ID and secret in the CMS stack as
    `ARCHVIEW_CLIENT_ID`/`ARCHVIEW_CLIENT_SECRET`, with
