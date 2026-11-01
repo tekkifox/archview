@@ -363,12 +363,12 @@ services:
 
 The socket proxy is the only container that mounts `/var/run/docker.sock`. ArchView only needs read-only host mounts.
 
-## This deployment: archview.rossmoney.me
+## This deployment: archview.example.com
 
-`docker-compose.portainer.yml` is the stack used for `archview.rossmoney.me`. It
+`docker-compose.portainer.yml` is the stack used for `archview.example.com`. It
 joins the external `proxy` network at a fixed address (`172.18.0.10`) and
 listens on port `8083`; the host's openresty reverse proxy terminates TLS for
-`archview.rossmoney.me` and forwards to that address. ArchView trusts the
+`archview.example.com` and forwards to that address. ArchView trusts the
 proxy's `X-Forwarded-Proto`/`X-Forwarded-Host` headers, which is why the login
 redirect sent to the identity provider uses `https://` and the public hostname
 instead of the container's own address.
@@ -391,7 +391,7 @@ OAUTH_ISSUER=https://<tenant>.auth0.com/
 OAUTH_CLIENT_ID=archview
 OAUTH_CLIENT_SECRET=replace-me
 # Must match the callback registered with Auth0 byte for byte.
-OAUTH_REDIRECT_URL=https://archview.rossmoney.me/auth/callback
+OAUTH_REDIRECT_URL=https://archview.example.com/auth/callback
 OAUTH_SCOPES="openid profile email"
 # Optional: restrict who may log in.
 OAUTH_ALLOWED_EMAILS=you@example.com
@@ -404,15 +404,15 @@ SESSION_TTL=8h
 SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAMESITE=lax
 
-# Machine-to-machine client used by the rossmoney.me CMS (/api/architecture
+# Machine-to-machine client used by the example.com CMS (/api/architecture
 # proxy). Access tokens are issued by Auth0 for the API identifier below: their
-# aud is https://archview.rossmoney.me/api, their azp is the Client ID of the
+# aud is https://archview.example.com/api, their azp is the Client ID of the
 # "cms" application and their scope contains archview:read.
 # Takes the Auth0 Client ID of the "cms" application (the opaque value from its
 # Settings), not the application name.
 OAUTH_M2M_CLIENTS=<cms-app-client-id>
 OAUTH_M2M_SCOPES=archview:read
-OAUTH_M2M_AUDIENCES=https://archview.rossmoney.me/api
+OAUTH_M2M_AUDIENCES=https://archview.example.com/api
 
 TRUST_PROXY_HEADERS=true
 ```
@@ -420,10 +420,10 @@ TRUST_PROXY_HEADERS=true
 Steps to bring it up:
 
 1. In Auth0, create a **Regular Web Application** named `archview` and register
-   `https://archview.rossmoney.me/auth/callback` as an allowed callback URL.
+   `https://archview.example.com/auth/callback` as an allowed callback URL.
    `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` are its Client ID and Client
    Secret; `OAUTH_REDIRECT_URL` is that same callback URI.
-2. Create an **API** whose identifier is `https://archview.rossmoney.me/api` and
+2. Create an **API** whose identifier is `https://archview.example.com/api` and
    define the `archview:read` permission. Enable *Add Permissions in the Access
    Token* so the permission appears in the token's `scope`.
 3. Create a **Machine-to-Machine Application** named `cms` and authorize it for
@@ -433,14 +433,14 @@ Steps to bring it up:
    the API identifier.
 4. Put the values above in the stack's `stack.env` in Portainer and deploy
    `docker-compose.portainer.yml`.
-5. Point the openresty server block for `archview.rossmoney.me` at
+5. Point the openresty server block for `archview.example.com` at
    `172.18.0.10:8083` and pass `Host`, `X-Forwarded-Proto` and
    `X-Forwarded-For` through unchanged.
 6. Store the CMS client ID and secret in the CMS stack as
    `ARCHVIEW_CLIENT_ID`/`ARCHVIEW_CLIENT_SECRET`, with
-   `ARCHVIEW_URL=https://archview.rossmoney.me`. The CMS exchanges them for a
+   `ARCHVIEW_URL=https://archview.example.com`. The CMS exchanges them for a
    token at `https://<tenant>.auth0.com/oauth/token` with the
-   client-credentials grant, `audience=https://archview.rossmoney.me/api` and
+   client-credentials grant, `audience=https://archview.example.com/api` and
    `scope=archview:read`, then calls ArchView with the access token.
 
 Auth0 issues signed JWT access tokens, so no `OAUTH_INTROSPECTION_*` settings
@@ -454,24 +454,24 @@ Verify the boundary:
 
 ```bash
 # Anonymous API call is rejected and advertises the scheme.
-curl -sI https://archview.rossmoney.me/api/architecture | grep -i www-authenticate
+curl -sI https://archview.example.com/api/architecture | grep -i www-authenticate
 
 # The login entry point hands the browser to the identity provider.
-curl -sI https://archview.rossmoney.me/auth/login | grep -i location
+curl -sI https://archview.example.com/auth/login | grep -i location
 
 # A client-credentials token gets a snapshot without a browser session.
 TOKEN=$(curl -s -X POST "https://<tenant>.auth0.com/oauth/token" \
   -H "Content-Type: application/json" \
-  -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$ARCHVIEW_CLIENT_ID\",\"client_secret\":\"$ARCHVIEW_CLIENT_SECRET\",\"audience\":\"https://archview.rossmoney.me/api\",\"scope\":\"archview:read\"}" \
+  -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$ARCHVIEW_CLIENT_ID\",\"client_secret\":\"$ARCHVIEW_CLIENT_SECRET\",\"audience\":\"https://archview.example.com/api\",\"scope\":\"archview:read\"}" \
   | jq -r .access_token)
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://archview.rossmoney.me/api/architecture?project=travelling" | head -c 200
+  "https://archview.example.com/api/architecture?project=travelling" | head -c 200
 ```
 
 The public site never calls ArchView from the browser: cross-site requests would
 not carry the session cookie, so the CMS reaches the API from its own server
 through `/api/architecture` and forwards the response. Open
-`https://archview.rossmoney.me/auth/login` directly in a browser to use the
+`https://archview.example.com/auth/login` directly in a browser to use the
 interactive login.
 
 ## Microservice notes
