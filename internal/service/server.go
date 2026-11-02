@@ -530,44 +530,35 @@ func normalizeHost(raw string) (string, bool) {
 }
 
 func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
-	project := r.URL.Query().Get("project")
+	project := strings.TrimSpace(r.URL.Query().Get("project"))
+	baseURL := s.requestBaseURL(r)
 
-	// Require a project query parameter.
-	if project == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "missing required query parameter: project"})
+	// A project is optional: without one the caller gets the whole host.
+	// FULL_DOCKER_PROJECTS can also select the full host overview, either for
+	// every request ("1", "true" or "all") or for named projects.
+	fullOverview := project == ""
+	if !fullOverview {
+		project = normalizeProject(project)
+		fullOverview = fullDockerProjectSelected(project)
+	}
+
+	if fullOverview {
+		resp, err := s.buildOverview(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		attachEndpoints(&resp, baseURL)
+		m, err := attachTelemetryToOverview(resp)
+		if err != nil {
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+		writeJSON(w, http.StatusOK, m)
 		return
 	}
 
-	// Normalize common aliases
-	project = normalizeProject(project)
-	baseURL := s.requestBaseURL(r)
-
-	// Determine whether this project should return a full Docker snapshot.
-	// Controlled via env FULL_DOCKER_PROJECTS: a comma-separated list of
-	// normalised project labels, matched case-sensitively after trimming.
-	fullProjectsEnv := os.Getenv("FULL_DOCKER_PROJECTS")
-	if fullProjectsEnv != "" {
-		for _, p := range strings.Split(fullProjectsEnv, ",") {
-			if strings.TrimSpace(p) == project {
-				// return full overview for this project
-				resp, err := s.buildOverview(r.Context())
-				if err != nil {
-					writeError(w, err)
-					return
-				}
-				attachEndpoints(&resp, baseURL)
-				m, err := attachTelemetryToOverview(resp)
-				if err != nil {
-					writeJSON(w, http.StatusOK, resp)
-					return
-				}
-				writeJSON(w, http.StatusOK, m)
-				return
-			}
-		}
-	}
-
-	// Otherwise return project-scoped overview
+	// Otherwise return project-scoped overview.
 	resp, err := s.buildProjectOverview(r.Context(), project)
 	if err != nil {
 		writeError(w, err)
@@ -582,12 +573,31 @@ func (s *Server) handleArchitecture(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m)
 }
 
+// fullDockerProjectSelected reports whether FULL_DOCKER_PROJECTS selects the
+// full host overview for project. The special values "1", "true" and "all"
+// (case-insensitive) select it for every request. Any other value is a
+// comma-separated list of normalised project labels, matched case-sensitively
+// after trimming.
+func fullDockerProjectSelected(project string) bool {
+	for _, entry := range strings.Split(os.Getenv("FULL_DOCKER_PROJECTS"), ",") {
+		entry = strings.TrimSpace(entry)
+		switch strings.ToLower(entry) {
+		case "1", "true", "all":
+			return true
+		}
+		if entry == project {
+			return true
+		}
+	}
+	return false
+}
+
 // normalizeProject maps the aliases accepted by /api/architecture onto the
 // canonical project label. Matching is exact and case-sensitive.
 func normalizeProject(project string) string {
 	switch project {
-	case "travelling", "image-mosaic", "photoprism":
-		return "travelling"
+	case "travelling", "travelling-site", "image-mosaic", "photoprism":
+		return "travelling-site"
 	case "rossmoney", "rossmoney-me", "rossmoney_me":
 		return "rossmoney_me"
 	default:

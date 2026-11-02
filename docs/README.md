@@ -21,7 +21,7 @@ Send either the session cookie created by the login flow or an OAuth 2.0 access
 token (client credentials grant or an OIDC bearer JWT):
 
 - `GET /auth/user`
-- `GET /api/architecture?project=image-mosaic`
+- `GET /api/architecture` — full host overview; optional `?project=` scopes it
 - `GET /api/docker`
 - `GET /api/system`
 

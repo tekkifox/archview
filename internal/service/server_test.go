@@ -9,13 +9,14 @@ import (
 
 func TestNormalizeProjectAliases(t *testing.T) {
 	cases := map[string]string{
-		"travelling":   "travelling",
-		"image-mosaic": "travelling",
-		"photoprism":   "travelling",
-		"rossmoney":    "rossmoney_me",
-		"rossmoney-me": "rossmoney_me",
-		"rossmoney_me": "rossmoney_me",
-		"other":        "other",
+		"travelling":      "travelling-site",
+		"travelling-site": "travelling-site",
+		"image-mosaic":    "travelling-site",
+		"photoprism":      "travelling-site",
+		"rossmoney":       "rossmoney_me",
+		"rossmoney-me":    "rossmoney_me",
+		"rossmoney_me":    "rossmoney_me",
+		"other":           "other",
 	}
 	for input, want := range cases {
 		if got := normalizeProject(input); got != want {

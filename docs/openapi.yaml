@@ -142,10 +142,10 @@ paths:
       parameters:
         - in: query
           name: project
-          required: true
+          required: false
           schema:
             type: string
-          description: Project key. `travelling` and `image-mosaic` map to the image-mosaic project, `rossmoney` maps to `rossmoney_me`.
+          description: Optional project key. Without it the full host overview is returned. `travelling`, `travelling-site` and `image-mosaic` map to `travelling-site`; `rossmoney` maps to `rossmoney_me`. The full overview is also returned for every request when `FULL_DOCKER_PROJECTS` is `1`, `true` or `all`.
       responses:
         '200':
           description: Architecture payload
@@ -340,7 +340,7 @@ components:
         url:
           type: string
           format: uri
-          description: Absolute URL. The architecture entry is advertised without a query string; callers still supply `project` when invoking the route.
+          description: Absolute URL. The architecture entry is advertised without a query string; `project` is optional when invoking the route.
       required: [name, url]
     DockerSnapshot:
       type: object
