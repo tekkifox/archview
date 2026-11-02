@@ -252,12 +252,23 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout repository (Portainer API deploy)
-        if: github.ref == 'refs/heads/main'
+  deploy:
+    name: Deploy stack ${{ matrix.stack }}
+    runs-on: ubuntu-latest
+    needs: [merge]
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { stack: 23, endpoint: 3, compose: docker-compose.local.yml }
+          - { stack: 24, endpoint: 3, compose: docker-compose.dev.yml }
+          - { stack: 31, endpoint: 9, compose: docker-compose.edge.yml }
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Update Portainer stack (photos-archview, edge) via API
-        if: github.ref == 'refs/heads/main'
+      - name: Update Portainer stack (${{ matrix.stack }}) via API
         env:
           PORTAINER_URL: ${{ secrets.PORTAINER_URL }}
           PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
@@ -270,27 +281,27 @@ jobs:
           # 1. Read the current Env array so it is preserved on update.
           get_code="$(curl -sS -o "$tmpdir/stack.json" -w '%{http_code}' \
             -H "X-API-Key: ${PORTAINER_API_KEY}" \
-            "${PORTAINER_URL}/api/stacks/31")"
+            "${PORTAINER_URL}/api/stacks/${{ matrix.stack }}")"
           if [ "$get_code" -lt 200 ] || [ "$get_code" -ge 300 ]; then
-            echo "GET /api/stacks/31 failed with HTTP $get_code"
+            echo "GET /api/stacks/${{ matrix.stack }} failed with HTTP $get_code"
             cat "$tmpdir/stack.json"
             exit 1
           fi
           env_json="$(jq -c '.Env // []' "$tmpdir/stack.json")"
 
           # 2. Build the request body with jq (no hand-rolled JSON escaping).
-          jq -n --rawfile compose docker-compose.edge.yml --argjson env "$env_json" \
+          jq -n --rawfile compose ${{ matrix.compose }} --argjson env "$env_json" \
             '{StackFileContent: $compose, Env: $env, PullImage: true}' \
             > "$tmpdir/body.json"
 
           put_code="$(curl -sS -o "$tmpdir/resp.json" -w '%{http_code}' -X PUT \
             -H "X-API-Key: ${PORTAINER_API_KEY}" \
             -H "Content-Type: application/json" \
-            "${PORTAINER_URL}/api/stacks/31?endpointId=9" \
+            "${PORTAINER_URL}/api/stacks/${{ matrix.stack }}?endpointId=${{ matrix.endpoint }}" \
             -d @"$tmpdir/body.json")"
           if [ "$put_code" -lt 200 ] || [ "$put_code" -ge 300 ]; then
-            echo "PUT /api/stacks/31 failed with HTTP $put_code"
+            echo "PUT /api/stacks/${{ matrix.stack }} failed with HTTP $put_code"
             cat "$tmpdir/resp.json"
             exit 1
           fi
-          echo "Portainer stack 31 updated (HTTP $put_code)"
+          echo "Portainer stack ${{ matrix.stack }} updated (HTTP $put_code)"
