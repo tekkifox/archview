@@ -251,3 +251,46 @@ jobs:
             echo "One or more Portainer webhooks failed ($failures)"
             exit 1
           fi
+
+      - name: Checkout repository (Portainer API deploy)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/checkout@v7
+
+      - name: Update Portainer stack (photos-archview, edge) via API
+        if: github.ref == 'refs/heads/main'
+        env:
+          PORTAINER_URL: ${{ secrets.PORTAINER_URL }}
+          PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          # 1. Read the current Env array so it is preserved on update.
+          get_code="$(curl -sS -o "$tmpdir/stack.json" -w '%{http_code}' \
+            -H "X-API-Key: ${PORTAINER_API_KEY}" \
+            "${PORTAINER_URL}/api/stacks/31")"
+          if [ "$get_code" -lt 200 ] || [ "$get_code" -ge 300 ]; then
+            echo "GET /api/stacks/31 failed with HTTP $get_code"
+            cat "$tmpdir/stack.json"
+            exit 1
+          fi
+          env_json="$(jq -c '.Env // []' "$tmpdir/stack.json")"
+
+          # 2. Build the request body with jq (no hand-rolled JSON escaping).
+          jq -n --rawfile compose docker-compose.portainer.yml --argjson env "$env_json" \
+            '{StackFileContent: $compose, Env: $env, PullImage: true}' \
+            > "$tmpdir/body.json"
+
+          put_code="$(curl -sS -o "$tmpdir/resp.json" -w '%{http_code}' -X PUT \
+            -H "X-API-Key: ${PORTAINER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            "${PORTAINER_URL}/api/stacks/31?endpointId=9" \
+            -d @"$tmpdir/body.json")"
+          if [ "$put_code" -lt 200 ] || [ "$put_code" -ge 300 ]; then
+            echo "PUT /api/stacks/31 failed with HTTP $put_code"
+            cat "$tmpdir/resp.json"
+            exit 1
+          fi
+          echo "Portainer stack 31 updated (HTTP $put_code)"
