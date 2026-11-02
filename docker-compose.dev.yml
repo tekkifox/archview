@@ -1,0 +1,27 @@
+services:
+  archview-dev:
+    image: ghcr.io/tekkifox/archview:dev
+    hostname: archview-dev
+    container_name: archview-dev
+    pull_policy: always
+    env_file:
+      - stack.env
+    networks:
+      archview-dev-stack:
+      proxy:
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  proxy:
+    external: true
+  archview-dev-stack:

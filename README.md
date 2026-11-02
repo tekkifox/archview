@@ -363,6 +363,8 @@ services:
 
 The socket proxy is the only container that mounts `/var/run/docker.sock`. ArchView only needs read-only host mounts.
 
+Note: `docker-compose.local.yml`, `docker-compose.dev.yml`, and `docker-compose.edge.yml` are the compose files the three deployments run (local, dev, and edge); `docker-compose.portainer.yml` is the stale main-server stack — edit the right one.
+
 ## This deployment: archview.example.com
 
 `docker-compose.portainer.yml` is the stack used for `archview.example.com`. It
