@@ -279,7 +279,7 @@ jobs:
           env_json="$(jq -c '.Env // []' "$tmpdir/stack.json")"
 
           # 2. Build the request body with jq (no hand-rolled JSON escaping).
-          jq -n --rawfile compose docker-compose.portainer.yml --argjson env "$env_json" \
+          jq -n --rawfile compose docker-compose.edge.yml --argjson env "$env_json" \
             '{StackFileContent: $compose, Env: $env, PullImage: true}' \
             > "$tmpdir/body.json"
 

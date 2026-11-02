@@ -1,0 +1,53 @@
+services:
+  ph:
+    image: ghcr.io/tekkifox/archview:latest
+    hostname: archview
+    container_name: photos-archview
+    pull_policy: always
+    env_file:
+      - stack.env
+    networks:
+      archview-stack:
+      proxy:
+        aliases:
+          - archview
+    depends_on:
+      photos-archview-socket-proxy:
+        condition: service_healthy
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  photos-archview-socket-proxy:
+    pull_policy: always
+    image: lscr.io/linuxserver/socket-proxy:latest
+    container_name: photos-archview-socket-proxy
+    env_file:
+      - stack.env
+    networks:
+      - archview-stack
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    tmpfs:
+      - /run
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2375/_ping | grep -q OK"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+networks:
+  proxy:
+    external: true
+  archview-stack:
