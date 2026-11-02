@@ -31,13 +31,15 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 | `GET /auth/callback` | public | OAuth callback; sets the session cookie |
 | `GET /auth/logout` | public | Clears the session cookie |
 | `GET /auth/user` | protected | Current principal |
-| `GET /api/architecture` | protected | Project-scoped overview with telemetry |
+| `GET /api/architecture` | protected | Host overview with telemetry; optional `project` scopes it |
 | `GET /api/docker` | protected | Docker daemon, container and image inventory |
 | `GET /api/system` | protected | Linux host metrics |
 
 Protected endpoints return `401` with a `WWW-Authenticate: Bearer` header when no valid credential is present.
 
-`FULL_DOCKER_PROJECTS` widens the `/api/architecture` response for selected projects. It is a comma-separated list of project labels — not newline-separated. Labels are matched after alias normalisation, so `image-mosaic` and `photoprism` both arrive as the canonical `travelling`; matching is case-sensitive and surrounding spaces around each entry are trimmed. Because matching happens on the normalised label, `FULL_DOCKER_PROJECTS` must list `travelling`, not the alias. When a project matches, the endpoint returns the **full host and Docker overview** (every container and image) instead of the project-scoped snapshot. When unset, every project stays scoped.
+`project` is optional. Without it, `/api/architecture` returns the **full host and Docker overview** (every container and image) with telemetry. Supplying `project` returns the project-scoped snapshot unless that project is selected for a full overview.
+
+`FULL_DOCKER_PROJECTS` selects which projects receive the full overview. Set it to `1`, `true` or `all` (case-insensitive, surrounding whitespace ignored) to return the full overview for **every** request, with or without `project`. Otherwise it is a comma-separated list of project labels — not newline-separated. Labels are matched after alias normalisation, so `travelling`, `travelling-site`, `image-mosaic` and `photoprism` all arrive as the canonical `travelling-site`, while `rossmoney` and `rossmoney-me` arrive as `rossmoney_me`; matching is case-sensitive and surrounding spaces around each entry are trimmed. Because matching happens on the normalised label, `FULL_DOCKER_PROJECTS` must list `travelling-site`, not an alias. When a project matches, the endpoint returns the full host overview instead of the project-scoped snapshot.
 
 Every overview and architecture response also carries an `endpoints` array with
 absolute URLs for the instance that served the request, so a consumer can
@@ -273,7 +275,7 @@ For Google specifically:
 | `HOST_ROOT` | `/host/root` | Mounted host root (for disk stats) |
 | `CORS_ALLOWED_ORIGINS` | — | Comma-separated exact origins; empty means same-origin only |
 | `TRUST_PROXY_HEADERS` | `false` | Honour `X-Forwarded-Proto`/`X-Forwarded-Host` |
-| `FULL_DOCKER_PROJECTS` | — | Comma-separated normalised project labels that receive the full host and Docker overview; matched case-sensitively after trimming; empty keeps every project scoped |
+| `FULL_DOCKER_PROJECTS` | — | `1`, `true` or `all` returns the full host and Docker overview for every request; otherwise a comma-separated list of normalised project labels that receive it, matched case-sensitively after trimming |
 
 ### Authentication
 
@@ -461,13 +463,13 @@ curl -sI https://archview.example.com/api/architecture | grep -i www-authenticat
 # The login entry point hands the browser to the identity provider.
 curl -sI https://archview.example.com/auth/login | grep -i location
 
-# A client-credentials token gets a snapshot without a browser session.
+# A client-credentials token gets a full host snapshot without a browser session.
 TOKEN=$(curl -s -X POST "https://<tenant>.auth0.com/oauth/token" \
   -H "Content-Type: application/json" \
   -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$ARCHVIEW_CLIENT_ID\",\"client_secret\":\"$ARCHVIEW_CLIENT_SECRET\",\"audience\":\"https://archview.example.com/api\",\"scope\":\"archview:read\"}" \
   | jq -r .access_token)
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://archview.example.com/api/architecture?project=travelling" | head -c 200
+  "https://archview.example.com/api/architecture" | head -c 200
 ```
 
 The public site never calls ArchView from the browser: cross-site requests would
@@ -490,7 +492,7 @@ Example request:
 ```bash
 curl -s \
   -H "Authorization: Bearer $TOKEN" \
-  https://archview.example.com/api/architecture?project=travelling | jq .
+  "https://archview.example.com/api/architecture?project=travelling-site" | jq .
 ```
 
 ## Development
