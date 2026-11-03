@@ -214,29 +214,52 @@ func TestAuthMiddlewareProtectsApiOnly(t *testing.T) {
 }
 
 func TestIndexIsJSONAndNotADashboard(t *testing.T) {
-	handler := newAuthServer(t, AuthConfig{Mode: authModeNone}, nil)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://archview.test/", nil))
+	provider := newFakeProvider(t)
+	cases := []struct {
+		name string
+		cfg  AuthConfig
+	}{
+		{name: "no auth", cfg: AuthConfig{Mode: authModeNone}},
+		{name: "oidc", cfg: testAuthConfig(provider.server.URL)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := newAuthServer(t, tc.cfg, nil)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://archview.test/", nil))
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", recorder.Code)
-	}
-	if contentType := recorder.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
-		t.Fatalf("content type = %q, want application/json", contentType)
-	}
-	body := recorder.Body.String()
-	if strings.Contains(strings.ToLower(body), "<!doctype html>") {
-		t.Fatal("the dashboard should have been removed, but HTML was served")
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode index payload: %v", err)
-	}
-	if payload["service"] != "archview" {
-		t.Fatalf("unexpected index payload: %s", body)
-	}
-	if recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
-		t.Fatal("security headers are missing")
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", recorder.Code)
+			}
+			if contentType := recorder.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+				t.Fatalf("content type = %q, want application/json", contentType)
+			}
+			body := recorder.Body.String()
+			if strings.Contains(strings.ToLower(body), "<!doctype html>") {
+				t.Fatal("the dashboard should have been removed, but HTML was served")
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode index payload: %v", err)
+			}
+			if payload["service"] != "archview" {
+				t.Fatalf("unexpected index payload: %s", body)
+			}
+			if payload["version"] != "1" {
+				t.Fatalf("index version = %v, want 1", payload["version"])
+			}
+			if _, ok := payload["description"]; !ok {
+				t.Fatalf("index description is missing: %s", body)
+			}
+			for _, leaked := range []string{"endpoints", "auth"} {
+				if _, ok := payload[leaked]; ok {
+					t.Fatalf("index must not expose %q to unauthenticated clients: %s", leaked, body)
+				}
+			}
+			if recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatal("security headers are missing")
+			}
+		})
 	}
 }
 
