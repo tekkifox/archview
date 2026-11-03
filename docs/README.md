@@ -24,6 +24,11 @@ token (client credentials grant or an OIDC bearer JWT):
 - `GET /api/architecture` — full host overview; optional `?project=` scopes it
 - `GET /api/docker`
 - `GET /api/system`
+- `POST /api/endpoints/{key}/prune-images` — prune dangling images on a managed
+  endpoint; `?all=true` prunes all unused images. Requires an administrator
+  (`ENDPOINTS_ADMIN_EMAILS` or `ENDPOINTS_ADMIN_CLIENTS`).
 
 Unauthenticated requests receive `401` with `WWW-Authenticate: Bearer`.
+Authenticated callers that are not endpoint administrators receive `403` from
+the endpoint-management route.
 

@@ -185,6 +185,76 @@ paths:
                 $ref: '#/components/schemas/SystemSnapshot'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/endpoints/{key}/prune-images:
+    post:
+      summary: Prune Docker images on a managed endpoint
+      description: |
+        Prunes images through the Portainer hub. Only dangling images are pruned
+        by default; pass `all=true` to prune every unused image. The caller must
+        be authenticated and listed in `ENDPOINTS_ADMIN_EMAILS` or
+        `ENDPOINTS_ADMIN_CLIENTS`; otherwise the route returns 403.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+          description: Stable endpoint key from `ENDPOINTS`.
+        - in: query
+          name: all
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Prune all unused images instead of only dangling images.
+      responses:
+        '200':
+          description: Prune result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PruneImagesResponse'
+        '400':
+          description: Invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller is authenticated but not an endpoint administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Unknown endpoint key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '405':
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Portainer returned an error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Endpoint management is not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   securitySchemes:
     bearerAuth:
@@ -461,6 +531,37 @@ components:
           type: integer
         sentBytes:
           type: integer
+    PruneImagesResponse:
+      type: object
+      properties:
+        endpoint:
+          type: string
+          description: Stable endpoint key from `ENDPOINTS`.
+        portainerEndpointId:
+          type: integer
+          description: Portainer endpoint id used for the call.
+        mode:
+          type: string
+          enum: [dangling, all]
+          description: "`dangling` by default, or `all` when `?all=true` was supplied."
+        imagesDeleted:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrunedImage'
+        deletedCount:
+          type: integer
+        spaceReclaimedBytes:
+          type: integer
+          format: int64
+    PrunedImage:
+      type: object
+      properties:
+        deleted:
+          type: string
+          description: Image ID reported by Docker.
+        untagged:
+          type: string
+          description: Repo tag removed by Docker.
     ServiceSummary:
       type: object
       properties:

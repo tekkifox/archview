@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -47,6 +48,9 @@ func main() {
 			log.Printf("docker socket: %s", cfg.DockerSock)
 		}
 		log.Printf("host proc: %s", cfg.HostProc)
+		if len(cfg.Endpoints) > 0 {
+			log.Printf("endpoint management: %d endpoint(s) through %s", len(cfg.Endpoints), cfg.PortainerURL)
+		}
 		serverErr <- httpServer.ListenAndServe()
 	}()
 
@@ -66,6 +70,11 @@ func main() {
 }
 
 func loadConfig() (service.Config, error) {
+	endpoints, err := service.ParseEndpoints(os.Getenv("ENDPOINTS"))
+	if err != nil {
+		return service.Config{}, fmt.Errorf("ENDPOINTS: %w", err)
+	}
+
 	auth := service.AuthConfig{
 		Mode:                    os.Getenv("AUTH_MODE"),
 		IssuerURL:               os.Getenv("OAUTH_ISSUER"),
@@ -128,6 +137,13 @@ func loadConfig() (service.Config, error) {
 		HostRoot:    envOrDefault("HOST_ROOT", "/host/root"),
 		CORSOrigins: envList("CORS_ALLOWED_ORIGINS"),
 		Auth:        auth,
+
+		Endpoints:                   endpoints,
+		PortainerURL:                envOrDefault("PORTAINER_URL", ""),
+		PortainerAPIKey:             os.Getenv("PORTAINER_API_KEY"),
+		PortainerInsecureSkipVerify: envBool("PORTAINER_INSECURE_SKIP_VERIFY", false),
+		EndpointAdminEmails:         envList("ENDPOINTS_ADMIN_EMAILS"),
+		EndpointAdminClients:        envList("ENDPOINTS_ADMIN_CLIENTS"),
 	}, nil
 }
 

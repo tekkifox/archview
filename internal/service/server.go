@@ -37,13 +37,34 @@ type Config struct {
 
 	// Auth configures OAuth/OIDC login and API authentication.
 	Auth AuthConfig
+
+	// Endpoints lists the hosts managed through the Portainer hub. It is empty
+	// by default, which leaves the endpoint-management API disabled.
+	Endpoints []ManagedEndpoint
+	// PortainerURL is the base URL of the Portainer hub, for example
+	// https://portainer.example.com:9443. PortainerAPIKey authenticates ArchView
+	// to that hub. Both are required when Endpoints is non-empty.
+	PortainerURL    string
+	PortainerAPIKey string
+	// PortainerInsecureSkipVerify disables TLS certificate verification for the
+	// Portainer hub. Use it only for a hub with a self-signed certificate on a
+	// trusted network.
+	PortainerInsecureSkipVerify bool
+
+	// EndpointAdminEmails and EndpointAdminClients restrict the destructive
+	// endpoint-management routes to named humans and OAuth client IDs. When
+	// authentication is enabled, an empty pair of lists makes those routes fail
+	// closed with 403.
+	EndpointAdminEmails  []string
+	EndpointAdminClients []string
 }
 
 type Server struct {
-	cfg        Config
-	client     *http.Client
-	dockerBase string
-	auth       *AuthManager
+	cfg             Config
+	client          *http.Client
+	portainerClient *http.Client
+	dockerBase      string
+	auth            *AuthManager
 }
 
 type OverviewResponse struct {
@@ -207,6 +228,21 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
+	if err := validateEndpointRegistry(cfg.Endpoints); err != nil {
+		return nil, err
+	}
+	if len(cfg.Endpoints) > 0 {
+		if strings.TrimSpace(cfg.PortainerURL) == "" {
+			return nil, fmt.Errorf("PORTAINER_URL is required when ENDPOINTS is configured")
+		}
+		if strings.TrimSpace(cfg.PortainerAPIKey) == "" {
+			return nil, fmt.Errorf("PORTAINER_API_KEY is required when ENDPOINTS is configured")
+		}
+		if err := validatePortainerURL(cfg.PortainerURL); err != nil {
+			return nil, err
+		}
+	}
+
 	return &Server{
 		cfg:        cfg,
 		dockerBase: dockerBase,
@@ -214,7 +250,8 @@ func NewServer(cfg Config) (*Server, error) {
 			Transport: transport,
 			Timeout:   10 * time.Second,
 		},
-		auth: auth,
+		portainerClient: newPortainerClient(cfg.PortainerInsecureSkipVerify),
+		auth:            auth,
 	}, nil
 }
 
@@ -256,6 +293,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
 	mux.HandleFunc("/api/docker", s.handleDocker)
 	mux.HandleFunc("/api/system", s.handleSystem)
+	mux.HandleFunc("/api/endpoints/", s.handleEndpointRoute)
 
 	var handler http.Handler = mux
 	handler = s.auth.Middleware(handler)
@@ -342,6 +380,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 			"/api/architecture",
 			"/api/docker",
 			"/api/system",
+			"/api/endpoints/{key}/prune-images",
 		},
 	})
 }
