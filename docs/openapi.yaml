@@ -515,6 +515,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/NetworkSnapshot'
+        failedLogins:
+          type: [integer, 'null']
+          description: |
+            SSH password failures the host recorded in the last hour, read from
+            `<HOST_ROOT>/var/lib/ssh-failed-logins.txt`. `null` when the host
+            cannot report a count (collector absent, file missing or unreadable,
+            or the host reported `unavailable`). Never coerced to `0`.
+        failedLoginsWindow:
+          type: string
+          enum: ['1h']
+          description: Time window covered by `failedLogins`.
     MemorySnapshot:
       type: object
       properties:

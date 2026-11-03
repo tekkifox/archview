@@ -105,6 +105,18 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		if sys.Processes > 0 {
 			host["processes"] = sys.Processes
 		}
+		// SSH password failures over the collector's window. Always present so
+		// a consumer can tell "unknown" (null) from a genuine zero.
+		window := sys.FailedLoginsWindow
+		if window == "" {
+			window = failedLoginsWindow
+		}
+		var failedLogins any
+		if sys.FailedLogins != nil {
+			failedLogins = *sys.FailedLogins
+		}
+		host["failedLogins"] = failedLogins
+		host["failedLoginsWindow"] = window
 
 		hosts = append(hosts, host)
 	}
@@ -167,6 +179,8 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		if hosts[0]["os"] != nil {
 			metrics["topOS"] = hosts[0]["os"]
 		}
+		metrics["failedLogins"] = h["failedLogins"]
+		metrics["failedLoginsWindow"] = h["failedLoginsWindow"]
 	}
 
 	telemetry["hosts"] = hosts
