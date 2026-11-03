@@ -1,14 +1,17 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestParseEndpoints(t *testing.T) {
@@ -282,7 +285,7 @@ func TestPruneImagesRejectsNonAdminPrincipal(t *testing.T) {
 }
 
 func TestEndpointAdminAuthorization(t *testing.T) {
-	newServer := func(t *testing.T, emails, clients []string) *Server {
+	newServer := func(t *testing.T, emails, clients []string, scope string) *Server {
 		t.Helper()
 		server, err := NewServer(Config{
 			Auth: AuthConfig{
@@ -293,6 +296,7 @@ func TestEndpointAdminAuthorization(t *testing.T) {
 			},
 			EndpointAdminEmails:  emails,
 			EndpointAdminClients: clients,
+			EndpointAdminScope:   scope,
 		})
 		if err != nil {
 			t.Fatalf("NewServer: %v", err)
@@ -301,11 +305,13 @@ func TestEndpointAdminAuthorization(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		emails    []string
-		clients   []string
-		principal Principal
-		want      bool
+		name       string
+		emails     []string
+		clients    []string
+		adminScope string
+		principal  Principal
+		want       bool
+		wantBody   string
 	}{
 		{
 			name:      "human admin",
@@ -317,27 +323,56 @@ func TestEndpointAdminAuthorization(t *testing.T) {
 			name:      "human not admin",
 			emails:    []string{"admin@example.com"},
 			principal: Principal{Email: "user@example.com", Method: "session"},
+			wantBody:  "this account is not allowed to manage endpoints",
 		},
 		{
-			name:      "machine admin client",
+			name:      "machine admin with allowlist and scope",
 			clients:   []string{"cron"},
-			principal: Principal{Name: "cron", Method: "client_credentials"},
+			principal: Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"endpoints:admin"}},
 			want:      true,
+		},
+		{
+			name:      "machine allowlisted without the admin scope",
+			clients:   []string{"cron"},
+			principal: Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"archview:read"}},
+			wantBody:  "endpoints:admin",
+		},
+		{
+			name:      "machine with the admin scope but not allowlisted",
+			clients:   []string{"cron"},
+			principal: Principal{Name: "cms", Method: "client_credentials", Scopes: []string{"endpoints:admin"}},
+			wantBody:  "ENDPOINTS_ADMIN_CLIENTS",
+		},
+		{
+			name:       "custom admin scope is honoured",
+			clients:    []string{"cron"},
+			adminScope: "ops:prune",
+			principal:  Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"ops:prune"}},
+			want:       true,
+		},
+		{
+			name:       "default scope is refused when overridden",
+			clients:    []string{"cron"},
+			adminScope: "ops:prune",
+			principal:  Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"endpoints:admin"}},
+			wantBody:   "ops:prune",
 		},
 		{
 			name:      "machine not admin",
 			clients:   []string{"cron"},
-			principal: Principal{Name: "cms", Method: "client_credentials"},
+			principal: Principal{Name: "cms", Method: "client_credentials", Scopes: []string{"endpoints:admin"}},
+			wantBody:  "ENDPOINTS_ADMIN_CLIENTS",
 		},
 		{
 			name:      "no admin configuration fails closed",
 			principal: Principal{Email: "admin@example.com", Method: "session"},
+			wantBody:  "endpoint administration is not configured",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := newServer(t, tt.emails, tt.clients)
+			server := newServer(t, tt.emails, tt.clients, tt.adminScope)
 			request := httptest.NewRequest(http.MethodPost, "https://archview.example/api/endpoints/rossmoney/prune-images", nil)
 			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, tt.principal))
 			recorder := httptest.NewRecorder()
@@ -345,6 +380,257 @@ func TestEndpointAdminAuthorization(t *testing.T) {
 			if got := server.authorizeEndpointAdmin(recorder, request); got != tt.want {
 				t.Fatalf("authorizeEndpointAdmin() = %v, want %v (body %s)", got, tt.want, recorder.Body.String())
 			}
+			if tt.wantBody != "" && !strings.Contains(recorder.Body.String(), tt.wantBody) {
+				t.Fatalf("refusal body %s does not mention %q", recorder.Body.String(), tt.wantBody)
+			}
 		})
+	}
+}
+
+func newEndpointTestServer(t *testing.T, portainerURL string, cfg Config) *Server {
+	t.Helper()
+	cfg.Endpoints = []ManagedEndpoint{{Key: "rossmoney", PortainerEndpointID: 7}}
+	cfg.PortainerURL = portainerURL
+	cfg.PortainerAPIKey = "test-portainer-key"
+	server, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return server
+}
+
+func endpointAdminTestAuth() AuthConfig {
+	return AuthConfig{
+		Mode:          authModeOIDC,
+		IssuerURL:     "http://127.0.0.1:1",
+		ClientID:      "archview",
+		SessionSecret: testSessionSecret,
+	}
+}
+
+func TestPruneImagesMachineCallerNeedsScopeAndAllowlist(t *testing.T) {
+	tests := []struct {
+		name        string
+		emails      []string
+		clients     []string
+		adminScope  string
+		principal   Principal
+		wantStatus  int
+		wantMessage string
+	}{
+		{
+			name:        "read scope alone is refused even when allowlisted",
+			clients:     []string{"cron"},
+			principal:   Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"archview:read"}},
+			wantStatus:  http.StatusForbidden,
+			wantMessage: "endpoints:admin",
+		},
+		{
+			name:        "scope without allowlist entry is refused",
+			clients:     []string{"cron"},
+			principal:   Principal{Name: "cms", Method: "client_credentials", Scopes: []string{"endpoints:admin"}},
+			wantStatus:  http.StatusForbidden,
+			wantMessage: "ENDPOINTS_ADMIN_CLIENTS",
+		},
+		{
+			name:       "scope and allowlist entry proceed",
+			clients:    []string{"cron"},
+			principal:  Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"endpoints:admin"}},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "custom scope from ENDPOINTS_ADMIN_SCOPE is honoured",
+			clients:    []string{"cron"},
+			adminScope: "ops:prune",
+			principal:  Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"ops:prune"}},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:        "default scope is not accepted when ENDPOINTS_ADMIN_SCOPE overrides it",
+			clients:     []string{"cron"},
+			adminScope:  "ops:prune",
+			principal:   Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"endpoints:admin"}},
+			wantStatus:  http.StatusForbidden,
+			wantMessage: "ops:prune",
+		},
+		{
+			name:       "oidc user on the email allowlist is unaffected by the scope rule",
+			emails:     []string{"admin@example.com"},
+			principal:  Principal{Email: "admin@example.com", Method: "session"},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			portainer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = w.Write([]byte(`{"ImagesDeleted":[],"SpaceReclaimed":0}`))
+			}))
+			t.Cleanup(portainer.Close)
+
+			server := newEndpointTestServer(t, portainer.URL, Config{
+				Auth:                 endpointAdminTestAuth(),
+				EndpointAdminEmails:  tt.emails,
+				EndpointAdminClients: tt.clients,
+				EndpointAdminScope:   tt.adminScope,
+			})
+			request := httptest.NewRequest(http.MethodPost, "https://archview.example/api/endpoints/rossmoney/prune-images", nil)
+			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, tt.principal))
+			recorder := httptest.NewRecorder()
+
+			server.handleEndpointRoute(recorder, request)
+
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", recorder.Code, tt.wantStatus, recorder.Body.String())
+			}
+			if tt.wantMessage != "" && !strings.Contains(recorder.Body.String(), tt.wantMessage) {
+				t.Fatalf("response %s does not mention %q", recorder.Body.String(), tt.wantMessage)
+			}
+			wantCalls := int32(0)
+			if tt.wantStatus == http.StatusOK {
+				wantCalls = 1
+			}
+			if calls.Load() != wantCalls {
+				t.Fatalf("Portainer calls = %d, want %d", calls.Load(), wantCalls)
+			}
+		})
+	}
+}
+
+func TestMachinePrincipalCarriesTokenScopes(t *testing.T) {
+	manager, err := NewAuthManager(AuthConfig{
+		Mode:          authModeOIDC,
+		IssuerURL:     "http://127.0.0.1:1",
+		ClientID:      "archview",
+		SessionSecret: testSessionSecret,
+	})
+	if err != nil {
+		t.Fatalf("NewAuthManager: %v", err)
+	}
+
+	principal, err := manager.principalFromMachineClaims(machineClaims(time.Now(), "http://127.0.0.1:1", "archview", "cron", "archview:read", "endpoints:admin"))
+	if err != nil {
+		t.Fatalf("principalFromMachineClaims: %v", err)
+	}
+	if !scopeContainsAll(principal.Scopes, []string{"endpoints:admin"}) {
+		t.Fatalf("machine principal scopes = %v, want endpoints:admin", principal.Scopes)
+	}
+}
+
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buffer bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&buffer)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	return &buffer
+}
+
+func TestPruneImagesAuditLineOnSuccess(t *testing.T) {
+	logs := captureLog(t)
+	portainer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"ImagesDeleted":[{"Deleted":"sha256:abc"},{"Untagged":"app:old"}],"SpaceReclaimed":123456}`))
+	}))
+	t.Cleanup(portainer.Close)
+
+	server := newEndpointTestServer(t, portainer.URL, Config{
+		Auth:                 endpointAdminTestAuth(),
+		EndpointAdminClients: []string{"cron"},
+	})
+	principal := Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"endpoints:admin"}}
+	request := httptest.NewRequest(http.MethodPost, "https://archview.example/api/endpoints/rossmoney/prune-images?all=true", nil)
+	request.Header.Set("Authorization", "Bearer super-secret-token")
+	request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+	recorder := httptest.NewRecorder()
+
+	server.handleEndpointRoute(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	line := logs.String()
+	for _, want := range []string{
+		`endpoint="rossmoney"`,
+		"portainerEndpointId=7",
+		`principal="cron"`,
+		`mode="all"`,
+		"deleted 2 images",
+		"reclaimed 123456 bytes",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("audit line %q does not contain %q", line, want)
+		}
+	}
+	if strings.Contains(line, "super-secret-token") || strings.Contains(line, "Bearer") {
+		t.Fatalf("audit line leaks the credential: %s", line)
+	}
+	if strings.Count(line, "prune-images endpoint=") != 1 {
+		t.Fatalf("want exactly one audit line, got %d: %s", strings.Count(line, "prune-images endpoint="), line)
+	}
+}
+
+func TestPruneImagesAuditLineOnRefusal(t *testing.T) {
+	logs := captureLog(t)
+	server := newEndpointTestServer(t, "https://portainer.example", Config{
+		Auth:                 endpointAdminTestAuth(),
+		EndpointAdminClients: []string{"cron"},
+	})
+	principal := Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"archview:read"}}
+	request := httptest.NewRequest(http.MethodPost, "https://archview.example/api/endpoints/rossmoney/prune-images", nil)
+	request.Header.Set("Authorization", "Bearer super-secret-token")
+	request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+	recorder := httptest.NewRecorder()
+
+	server.handleEndpointRoute(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	line := logs.String()
+	for _, want := range []string{
+		`endpoint="rossmoney"`,
+		`principal="cron"`,
+		`mode="dangling"`,
+		"refused:",
+		"endpoints:admin",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("audit line %q does not contain %q", line, want)
+		}
+	}
+	if strings.Contains(line, "super-secret-token") {
+		t.Fatalf("audit line leaks the credential: %s", line)
+	}
+	if strings.Count(line, "prune-images endpoint=") != 1 {
+		t.Fatalf("want exactly one audit line, got %d: %s", strings.Count(line, "prune-images endpoint="), line)
+	}
+}
+
+func TestPruneImagesAuditLineRecordsUpstreamStatus(t *testing.T) {
+	logs := captureLog(t)
+	portainer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "portainer exploded", http.StatusInternalServerError)
+	}))
+	t.Cleanup(portainer.Close)
+
+	server := newEndpointTestServer(t, portainer.URL, Config{
+		Auth:                 endpointAdminTestAuth(),
+		EndpointAdminClients: []string{"cron"},
+	})
+	principal := Principal{Name: "cron", Method: "client_credentials", Scopes: []string{"endpoints:admin"}}
+	request := httptest.NewRequest(http.MethodPost, "https://archview.example/api/endpoints/rossmoney/prune-images", nil)
+	request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, principal))
+	recorder := httptest.NewRecorder()
+
+	server.handleEndpointRoute(recorder, request)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	line := logs.String()
+	if !strings.Contains(line, "upstream status 500") {
+		t.Fatalf("audit line %q does not record the upstream status", line)
 	}
 }

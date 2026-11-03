@@ -190,9 +190,20 @@ paths:
       summary: Prune Docker images on a managed endpoint
       description: |
         Prunes images through the Portainer hub. Only dangling images are pruned
-        by default; pass `all=true` to prune every unused image. The caller must
-        be authenticated and listed in `ENDPOINTS_ADMIN_EMAILS` or
-        `ENDPOINTS_ADMIN_CLIENTS`; otherwise the route returns 403.
+        by default; pass `all=true` to prune every unused image.
+
+        The caller must be an endpoint administrator. A human must be
+        authenticated and listed in `ENDPOINTS_ADMIN_EMAILS`. A machine caller
+        (`client_credentials`) must be listed in `ENDPOINTS_ADMIN_CLIENTS`
+        **and** present the scope named by `ENDPOINTS_ADMIN_SCOPE` (default
+        `endpoints:admin`) in its access token; missing either is `403`.
+        `archview:read` alone never authorises this route, even when the client
+        id is allowlisted.
+
+        With `AUTH_MODE=none` the whole API is unauthenticated, including this
+        destructive route. Enable authentication or keep the port unreachable.
+        Every attempt, including refusals, is logged as one audit line naming
+        the endpoint, the caller identity, the mode and the outcome.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -226,7 +237,11 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Caller is authenticated but not an endpoint administrator
+          description: |
+            Caller is authenticated but not an endpoint administrator. A machine
+            token is refused when its client id is absent from
+            `ENDPOINTS_ADMIN_CLIENTS` or its token lacks the `ENDPOINTS_ADMIN_SCOPE`
+            permission; the message names the missing requirement.
           content:
             application/json:
               schema:

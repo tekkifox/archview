@@ -144,6 +144,7 @@ func loadConfig() (service.Config, error) {
 		PortainerInsecureSkipVerify: envBool("PORTAINER_INSECURE_SKIP_VERIFY", false),
 		EndpointAdminEmails:         envList("ENDPOINTS_ADMIN_EMAILS"),
 		EndpointAdminClients:        envList("ENDPOINTS_ADMIN_CLIENTS"),
+		EndpointAdminScope:          envOrDefault("ENDPOINTS_ADMIN_SCOPE", "endpoints:admin"),
 	}, nil
 }
 

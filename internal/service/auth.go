@@ -1068,6 +1068,7 @@ func (a *AuthManager) principalFromMachineClaims(claims map[string]any) (Princip
 		Name:     name,
 		Provider: provider,
 		Method:   "client_credentials",
+		Scopes:   claimScope(claims),
 	}, nil
 }
 
