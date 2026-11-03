@@ -55,8 +55,13 @@ type Config struct {
 	// endpoint-management routes to named humans and OAuth client IDs. When
 	// authentication is enabled, an empty pair of lists makes those routes fail
 	// closed with 403.
+	//
+	// Machine callers must also present EndpointAdminScope in their token. It
+	// defaults to "endpoints:admin" and is intentionally separate from the read
+	// scope, so a token issued for telemetry cannot delete images.
 	EndpointAdminEmails  []string
 	EndpointAdminClients []string
+	EndpointAdminScope   string
 }
 
 type Server struct {
@@ -230,6 +235,9 @@ func NewServer(cfg Config) (*Server, error) {
 
 	if err := validateEndpointRegistry(cfg.Endpoints); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(cfg.EndpointAdminScope) == "" {
+		cfg.EndpointAdminScope = defaultEndpointAdminScope
 	}
 	if len(cfg.Endpoints) > 0 {
 		if strings.TrimSpace(cfg.PortainerURL) == "" {

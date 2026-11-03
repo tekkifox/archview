@@ -28,6 +28,9 @@ type Principal struct {
 	// Method records how the caller authenticated: "session", "bearer" (a human
 	// token) or "client_credentials" (an OAuth machine-to-machine token).
 	Method string `json:"method,omitempty"`
+	// Scopes are the scopes carried by a machine (client-credentials) token.
+	// Browser sessions and human bearer tokens carry none.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // session is the payload stored inside the signed session cookie. It contains

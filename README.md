@@ -261,6 +261,11 @@ PORTAINER_INSECURE_SKIP_VERIFY=false
 # closed with 403. Client IDs are OAuth client IDs, not application names.
 ENDPOINTS_ADMIN_EMAILS=admin@example.com
 ENDPOINTS_ADMIN_CLIENTS=archview-cron
+
+# The scope a machine token must carry to call a destructive endpoint-management
+# route (default endpoints:admin). It is a second, narrower permission:
+# archview:read alone never authorises a prune, even for an allowlisted client.
+ENDPOINTS_ADMIN_SCOPE=endpoints:admin
 ```
 
 `ENDPOINTS` is empty by default, so an unconfigured ArchView behaves exactly as
@@ -270,11 +275,23 @@ usable registry or admin configuration, it returns a clear error instead of
 pretending to succeed.
 
 The route is `POST /api/endpoints/{key}/prune-images` where `{key}` is the stable
-key from `ENDPOINTS`. It requires an authenticated **administrator**: a session
-or bearer token whose email is in `ENDPOINTS_ADMIN_EMAILS`, or a
-client-credentials token whose client ID is in `ENDPOINTS_ADMIN_CLIENTS`. Other
-authenticated callers receive `403`. With `AUTH_MODE=none` the whole API is
-unauthenticated, including this route.
+key from `ENDPOINTS`. It requires an authenticated **administrator**:
+
+- a session or bearer token whose email is in `ENDPOINTS_ADMIN_EMAILS`; or
+- a client-credentials token whose client ID is in `ENDPOINTS_ADMIN_CLIENTS`
+  **and** whose token carries the scope named by `ENDPOINTS_ADMIN_SCOPE`
+  (default `endpoints:admin`).
+
+Missing either the allowlist entry or the scope returns `403` with a message
+saying which one. This is deliberate: `archview:read` is enough to read
+telemetry, and must never be enough to delete images, however the allowlist is
+configured. Other authenticated callers receive `403`.
+
+> **`AUTH_MODE=none` leaves this route unauthenticated.** With authentication
+> disabled the whole API is open, and that includes the image-prune route:
+> anyone who can reach the port can delete images. Only use `AUTH_MODE=none` for
+> local evaluation; otherwise enable authentication, or keep the port
+> unreachable from untrusted networks.
 
 By default only dangling images are pruned (Docker's
 `filters={"dangling":["true"]}`). Pass `?all=true` to opt in to pruning every
@@ -315,8 +332,10 @@ return `404`, and a deployment with `ENDPOINTS` set but Portainer credentials
 missing fails at startup rather than reporting a no-op success.
 
 For the daily cron on a managed host, use a dedicated client-credentials client,
-list its Client ID in `ENDPOINTS_ADMIN_CLIENTS`, and call the route with the
-token from your identity provider.
+list its Client ID in `ENDPOINTS_ADMIN_CLIENTS`, grant it the `endpoints:admin`
+permission as well as `archview:read`, and call the route with the token from
+your identity provider. The token's `scope` must contain the value of
+`ENDPOINTS_ADMIN_SCOPE`.
 
 
 ## Troubleshooting login
@@ -368,6 +387,7 @@ For Google specifically:
 | `PORTAINER_INSECURE_SKIP_VERIFY` | `false` | Skip TLS verification for a Portainer hub with a self-signed certificate |
 | `ENDPOINTS_ADMIN_EMAILS` | — | Comma-separated emails allowed to call endpoint-management routes |
 | `ENDPOINTS_ADMIN_CLIENTS` | — | Comma-separated OAuth client IDs allowed to call endpoint-management routes |
+| `ENDPOINTS_ADMIN_SCOPE` | `endpoints:admin` | Scope a machine token must carry in addition to the client allowlist; `archview:read` alone is not enough |
 
 ### Authentication
 
@@ -520,19 +540,28 @@ Steps to bring it up:
    `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` are its Client ID and Client
    Secret; `OAUTH_REDIRECT_URL` is that same callback URI.
 2. Create an **API** whose identifier is `https://archview.example.com/api` and
-   define the `archview:read` permission. Enable *Add Permissions in the Access
-   Token* so the permission appears in the token's `scope`.
+   define two permissions: `archview:read` for the read-only API, and
+   `endpoints:admin` for the destructive endpoint-management routes. Enable
+   *Add Permissions in the Access Token* so permissions appear in the token's
+   `scope`. `endpoints:admin` is a second, narrower permission:
+   `archview:read` alone no longer authorises a prune, even for a client that
+   is listed in `ENDPOINTS_ADMIN_CLIENTS`.
 3. Create a **Machine-to-Machine Application** named `cms` and authorize it for
    that API with `archview:read`. `OAUTH_M2M_CLIENTS` takes its Client ID — the
    opaque value from the application's Settings, not its name — while
    `OAUTH_M2M_SCOPES` holds the required permission and `OAUTH_M2M_AUDIENCES`
    the API identifier.
-4. Put the values above in the stack's `stack.env` in Portainer and deploy
+4. For a machine caller that prunes images (for example the daily cron), create
+   a separate **Machine-to-Machine Application**, authorize it for the API with
+   both `archview:read` and `endpoints:admin`, and list its Client ID in
+   `ENDPOINTS_ADMIN_CLIENTS`. Its tokens must carry the `endpoints:admin`
+   scope, which is what `ENDPOINTS_ADMIN_SCOPE` checks.
+5. Put the values above in the stack's `stack.env` in Portainer and deploy
    `docker-compose.portainer.yml`.
-5. Create a **proxy host** in Nginx Proxy Manager for `archview.example.com`
+6. Create a **proxy host** in Nginx Proxy Manager for `archview.example.com`
    pointing at `172.18.0.10:8083`, and pass `Host`, `X-Forwarded-Proto` and
    `X-Forwarded-For` through unchanged.
-6. Store the CMS client ID and secret in the CMS stack as
+7. Store the CMS client ID and secret in the CMS stack as
    `ARCHVIEW_CLIENT_ID`/`ARCHVIEW_CLIENT_SECRET`, with
    `ARCHVIEW_URL=https://archview.example.com`. The CMS exchanges them for a
    token at `https://<tenant>.auth0.com/oauth/token` with the

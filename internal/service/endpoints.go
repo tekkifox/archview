@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -15,6 +16,11 @@ import (
 	"strings"
 	"time"
 )
+
+// defaultEndpointAdminScope is the permission a machine token must carry to
+// call the destructive endpoint-management routes. It is deliberately narrower
+// than the read scope used for telemetry.
+const defaultEndpointAdminScope = "endpoints:admin"
 
 // ManagedEndpoint is one host reachable through the Portainer hub. Key is the
 // stable name used in ArchView URLs; PortainerEndpointID is the numeric id that
@@ -182,6 +188,7 @@ func (s *Server) handleEndpointRoute(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePruneImages(w http.ResponseWriter, r *http.Request, key string) {
 	endpoint, ok := s.managedEndpoint(key)
 	if !ok {
+		s.auditEndpointAttempt(r, ManagedEndpoint{Key: key}, "refused: unknown endpoint")
 		writeJSON(w, http.StatusNotFound, map[string]any{
 			"error":   "unknown endpoint",
 			"message": fmt.Sprintf("no managed endpoint named %q", key),
@@ -191,6 +198,7 @@ func (s *Server) handlePruneImages(w http.ResponseWriter, r *http.Request, key s
 
 	allImages, err := boolQueryParameter(r, "all")
 	if err != nil {
+		s.auditEndpointAttempt(r, endpoint, "refused: "+err.Error())
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -202,9 +210,11 @@ func (s *Server) handlePruneImages(w http.ResponseWriter, r *http.Request, key s
 		if errors.As(err, &configErr) {
 			status = http.StatusServiceUnavailable
 		}
+		s.auditEndpointAttempt(r, endpoint, endpointFailureOutcome(err))
 		writeJSON(w, status, map[string]any{"error": err.Error()})
 		return
 	}
+	s.auditEndpointAttempt(r, endpoint, fmt.Sprintf("deleted %d images, reclaimed %d bytes", result.DeletedCount, result.SpaceReclaimedBytes))
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -217,11 +227,89 @@ func (s *Server) managedEndpoint(key string) (ManagedEndpoint, bool) {
 	return ManagedEndpoint{}, false
 }
 
+// auditEndpointAttempt writes exactly one line for each attempt on a destructive
+// endpoint-management route, including refusals. It records the principal
+// identity (email or client id), never the credential itself, and deliberately
+// omits request bodies, headers and the Portainer API key.
+func (s *Server) auditEndpointAttempt(r *http.Request, endpoint ManagedEndpoint, outcome string) {
+	principal, _ := PrincipalFromContext(r.Context())
+	method := principal.Method
+	if method == "" {
+		method = "anonymous"
+	}
+	log.Printf("archview endpoints: prune-images endpoint=%q portainerEndpointId=%d principal=%q method=%q mode=%q outcome=%q",
+		endpoint.Key, endpoint.PortainerEndpointID, endpointPrincipalIdentity(principal), method, pruneMode(r), outcome)
+}
+
+// endpointPrincipalIdentity names the caller without exposing the token.
+func endpointPrincipalIdentity(principal Principal) string {
+	if principal.Email != "" {
+		return principal.Email
+	}
+	if principal.Method == "client_credentials" {
+		if principal.Name != "" {
+			return principal.Name
+		}
+		return principal.Subject
+	}
+	if principal.Name != "" {
+		return principal.Name
+	}
+	if principal.Subject != "" {
+		return principal.Subject
+	}
+	return "anonymous"
+}
+
+// pruneMode reports the requested mode without validating the parameter, so
+// refusals can be audited even when the request is malformed.
+func pruneMode(r *http.Request) string {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("all"))) {
+	case "1", "true", "yes", "on":
+		return "all"
+	default:
+		return "dangling"
+	}
+}
+
+func endpointFailureOutcome(err error) string {
+	var statusErr *portainerStatusError
+	if errors.As(err, &statusErr) {
+		return fmt.Sprintf("failed: upstream status %d", statusErr.statusCode)
+	}
+	return "failed: " + err.Error()
+}
+
+// endpointForAudit resolves the endpoint named by the request path, falling
+// back to its key so that attempts against unknown endpoints are still logged.
+func (s *Server) endpointForAudit(r *http.Request) ManagedEndpoint {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/endpoints/")
+	key, _, _ := strings.Cut(rest, "/")
+	if endpoint, ok := s.managedEndpoint(key); ok {
+		return endpoint
+	}
+	return ManagedEndpoint{Key: key}
+}
+
 // authorizeEndpointAdmin enforces the extra authorization required by the
 // destructive endpoint-management routes. Authentication itself is still done
 // by the shared auth middleware; this only decides whether the authenticated
 // caller is an administrator.
+//
+// Humans are admitted by the email allowlist. Machine callers must both be
+// listed in ENDPOINTS_ADMIN_CLIENTS and carry ENDPOINTS_ADMIN_SCOPE in their
+// token: a read-only token cannot delete images even if its client id is
+// allowlisted.
 func (s *Server) authorizeEndpointAdmin(w http.ResponseWriter, r *http.Request) bool {
+	refuse := func(status int, code, message string) bool {
+		s.auditEndpointAttempt(r, s.endpointForAudit(r), "refused: "+message)
+		writeJSON(w, status, map[string]any{
+			"error":   code,
+			"message": message,
+		})
+		return false
+	}
+
 	if !s.auth.Enabled() {
 		// AUTH_MODE=none deliberately leaves the whole API unauthenticated.
 		return true
@@ -229,40 +317,34 @@ func (s *Server) authorizeEndpointAdmin(w http.ResponseWriter, r *http.Request) 
 
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{
-			"error":   "unauthorized",
-			"message": "authentication required",
-		})
-		return false
+		return refuse(http.StatusUnauthorized, "unauthorized", "authentication required")
 	}
 
 	if len(s.cfg.EndpointAdminEmails) == 0 && len(s.cfg.EndpointAdminClients) == 0 {
-		writeJSON(w, http.StatusForbidden, map[string]any{
-			"error":   "endpoint administration is not configured",
-			"message": "set ENDPOINTS_ADMIN_EMAILS or ENDPOINTS_ADMIN_CLIENTS to allow endpoint management",
-		})
-		return false
+		return refuse(http.StatusForbidden, "endpoint administration is not configured",
+			"set ENDPOINTS_ADMIN_EMAILS or ENDPOINTS_ADMIN_CLIENTS to allow endpoint management")
 	}
 
 	if principal.Method == "client_credentials" {
-		if containsFold(s.cfg.EndpointAdminClients, principal.Name) {
-			return true
+		if !containsFold(s.cfg.EndpointAdminClients, principal.Name) {
+			return refuse(http.StatusForbidden, "forbidden",
+				"this client is not listed in ENDPOINTS_ADMIN_CLIENTS")
 		}
-		writeJSON(w, http.StatusForbidden, map[string]any{
-			"error":   "forbidden",
-			"message": "this client is not allowed to manage endpoints",
-		})
-		return false
+		scope := strings.TrimSpace(s.cfg.EndpointAdminScope)
+		if scope == "" {
+			scope = defaultEndpointAdminScope
+		}
+		if !scopeContainsAll(principal.Scopes, []string{scope}) {
+			return refuse(http.StatusForbidden, "forbidden",
+				fmt.Sprintf("this client token does not carry the %q scope required by ENDPOINTS_ADMIN_SCOPE", scope))
+		}
+		return true
 	}
 
 	if principal.Email != "" && containsFold(s.cfg.EndpointAdminEmails, principal.Email) {
 		return true
 	}
-	writeJSON(w, http.StatusForbidden, map[string]any{
-		"error":   "forbidden",
-		"message": "this account is not allowed to manage endpoints",
-	})
-	return false
+	return refuse(http.StatusForbidden, "forbidden", "this account is not allowed to manage endpoints")
 }
 
 type endpointConfigError struct {
@@ -270,6 +352,22 @@ type endpointConfigError struct {
 }
 
 func (e *endpointConfigError) Error() string { return e.message }
+
+// portainerStatusError carries the upstream status so the audit line can record
+// it without repeating Portainer's response body.
+type portainerStatusError struct {
+	endpoint   string
+	statusCode int
+	status     string
+	detail     string
+}
+
+func (e *portainerStatusError) Error() string {
+	if e.detail == "" {
+		return fmt.Sprintf("portainer returned %s for endpoint %q", e.status, e.endpoint)
+	}
+	return fmt.Sprintf("portainer returned %s for endpoint %q: %s", e.status, e.endpoint, e.detail)
+}
 
 func (s *Server) pruneEndpointImages(ctx context.Context, endpoint ManagedEndpoint, allImages bool) (PruneImagesResponse, error) {
 	if strings.TrimSpace(s.cfg.PortainerURL) == "" {
@@ -325,10 +423,12 @@ func (s *Server) pruneEndpointImages(ctx context.Context, endpoint ManagedEndpoi
 		if len(detail) > 2048 {
 			detail = detail[:2048]
 		}
-		if detail == "" {
-			return PruneImagesResponse{}, fmt.Errorf("portainer returned %s for endpoint %q", response.Status, endpoint.Key)
+		return PruneImagesResponse{}, &portainerStatusError{
+			endpoint:   endpoint.Key,
+			statusCode: response.StatusCode,
+			status:     response.Status,
+			detail:     detail,
 		}
-		return PruneImagesResponse{}, fmt.Errorf("portainer returned %s for endpoint %q: %s", response.Status, endpoint.Key, detail)
 	}
 
 	var pruned portainerPruneResponse

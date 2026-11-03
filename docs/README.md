@@ -25,10 +25,15 @@ token (client credentials grant or an OIDC bearer JWT):
 - `GET /api/docker`
 - `GET /api/system`
 - `POST /api/endpoints/{key}/prune-images` — prune dangling images on a managed
-  endpoint; `?all=true` prunes all unused images. Requires an administrator
-  (`ENDPOINTS_ADMIN_EMAILS` or `ENDPOINTS_ADMIN_CLIENTS`).
+  endpoint; `?all=true` prunes all unused images. Requires an administrator: an
+  email in `ENDPOINTS_ADMIN_EMAILS`, or a client-credentials caller that is
+  listed in `ENDPOINTS_ADMIN_CLIENTS` **and** whose token carries the
+  `ENDPOINTS_ADMIN_SCOPE` permission (default `endpoints:admin`).
+  `archview:read` alone is not enough.
 
 Unauthenticated requests receive `401` with `WWW-Authenticate: Bearer`.
 Authenticated callers that are not endpoint administrators receive `403` from
-the endpoint-management route.
+the endpoint-management route, and the refusal names the missing allowlist
+entry or scope. With `AUTH_MODE=none` the whole API, including this destructive
+route, is unauthenticated: enable authentication or keep the port unreachable.
 
