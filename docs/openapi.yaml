@@ -526,6 +526,30 @@ components:
           type: string
           enum: ['1h']
           description: Time window covered by `failedLogins`.
+        failedLoginUsers:
+          type: array
+          maxItems: 20
+          description: |
+            Per-user breakdown of the SSH password failures reported by
+            `failedLogins`, read from `<HOST_ROOT>/var/lib/ssh-failed-users.json`
+            and kept in the file's order (count-descending). Always an array,
+            never `null`: a missing, unreadable or malformed file yields an
+            empty array, and an entry is dropped when its `user` is not a
+            non-empty string or its `count` is not a non-negative integer.
+          items:
+            $ref: '#/components/schemas/FailedLoginUser'
+    FailedLoginUser:
+      type: object
+      properties:
+        user:
+          type: string
+          minLength: 1
+          description: Username targeted by the SSH password failures.
+        count:
+          type: integer
+          minimum: 0
+          description: Failures recorded for this user in the same window as `failedLogins`.
+      required: [user, count]
     MemorySnapshot:
       type: object
       properties:

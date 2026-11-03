@@ -76,10 +76,14 @@ return host internals or anything that could carry a secret:
 - `system` exposes CPU count, load average, memory, process count, disk byte
   totals and percentages, network byte counters, and the host's SSH password
   failures for the last hour (`failedLogins`, with `failedLoginsWindow` set to
-  `"1h"`) — no kernel, uptime, architecture, mount points, filesystems or
-  interface names. `failedLogins` is `null` when the host cannot report a
-  count (the collector is absent, the file is missing or unreadable, or the
-  host reported `unavailable`); it is never coerced to `0`;
+  `"1h"`, plus a per-user breakdown in `failedLoginUsers`) — no kernel, uptime,
+  architecture, mount points, filesystems or interface names. `failedLogins` is
+  `null` when the host cannot report a count (the collector is absent, the file
+  is missing or unreadable, or the host reported `unavailable`); it is never
+  coerced to `0`. `failedLoginUsers` is always an array — never `null` — of
+  `{"user","count"}` objects in count-descending order, at most 20 of them, and
+  an entry is dropped when its `user` is not a non-empty string or its `count`
+  is not a non-negative integer;
 - `NodeSummary.details` only carries a container's `image` and `state`.
 
 `hostname` and `os` are kept deliberately so a dashboard can identify which host
@@ -89,8 +93,23 @@ The SSH failure count comes from
 `<HOST_ROOT>/var/lib/ssh-failed-logins.txt`, a single line written by the host's
 collector. A number is reported as-is; `unavailable`, an unreadable file, or a
 host without the collector produces `"failedLogins": null` while the request
-still succeeds. The `/api/architecture` telemetry block exposes the same values
-on `hosts[]` and mirrors them into `metrics`.
+still succeeds.
+
+The per-user breakdown comes from
+`<HOST_ROOT>/var/lib/ssh-failed-users.json`, which the same collector writes:
+
+```json
+{"windowMinutes":60,"total":42,"users":[{"user":"root","count":30},{"user":"admin","count":12}]}
+```
+
+`failedLoginUsers` preserves the file's count-descending order and is truncated
+to the first 20 entries. A missing, unreadable or malformed file, or a document
+that does not match this shape, produces `"failedLoginUsers": []` — never
+`null` — and the request still succeeds. Individual entries whose `user` is not
+a non-empty string or whose `count` is not a non-negative integer are dropped.
+Username values are never written to logs or error messages. The
+`/api/architecture` telemetry block exposes the same values on `hosts[]` and
+mirrors both `failedLogins` and `failedLoginUsers` into `metrics`.
 
 ## Quick start
 
@@ -388,7 +407,7 @@ For Google specifically:
 | `DOCKER_API_VERSION` | `v1.41` | Docker API version prefix |
 | `HOST_PROC` | `/host/proc` | Mounted host `/proc` |
 | `HOST_SYS` | `/host/sys` | Mounted host `/sys` |
-| `HOST_ROOT` | `/host/root` | Mounted host root (for disk stats and `/var/lib/ssh-failed-logins.txt`) |
+| `HOST_ROOT` | `/host/root` | Mounted host root (for disk stats and `/var/lib/ssh-failed-logins.txt` / `ssh-failed-users.json`) |
 | `CORS_ALLOWED_ORIGINS` | — | Comma-separated exact origins; empty means same-origin only |
 | `TRUST_PROXY_HEADERS` | `false` | Honour `X-Forwarded-Proto`/`X-Forwarded-Host` |
 | `FULL_DOCKER_PROJECTS` | — | `1`, `true` or `all` returns the full host and Docker overview for every request; otherwise a comma-separated list of normalised project labels that receive it, matched case-sensitively after trimming |
