@@ -205,17 +205,16 @@ jobs:
     name: Redeploy Portainer stack ${{ matrix.stack }}
     runs-on: [self-hosted, paseo]
     needs: [merge]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
         include:
-          # main publishes :latest; dev publishes :dev. Stacks are matched by
-          # name because their Id and EndpointId change when Portainer
-          # environments are re-created.
+          # main publishes :latest. Stacks are matched by name because their
+          # Id and EndpointId change when Portainer environments are re-created.
           - { stack: archview, ref: refs/heads/main }
           - { stack: photos-archview, ref: refs/heads/main }
-          - { stack: dev-archview, ref: refs/heads/dev }
+          - { stack: storage-archview, ref: refs/heads/main }
     steps:
       - name: Redeploy stack via Portainer API
         if: github.ref == matrix.ref
@@ -233,6 +232,118 @@ jobs:
           fi
           if [ -z "${PORTAINER_API_KEY:-}" ]; then
             echo "PORTAINER_API_KEY secret is not set" >&2
+            exit 1
+          fi
+
+          PORTAINER_URL="${PORTAINER_URL%/}"
+          tmpdir="${RUNNER_TEMP:-/tmp}/portainer-${STACK_NAME}"
+          mkdir -p "$tmpdir"
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          # Issue one API request, fail loudly with the response body on any
+          # non-2xx status, and leave the body in $out for the caller.
+          request() {
+            local method="$1"
+            local url="$2"
+            local out="$3"
+            shift 3
+            local status
+            status=$(curl -sS -o "$out" -w '%{http_code}' -X "$method" "$@" "$url") || {
+              echo "Portainer ${method} ${url} failed before a response" >&2
+              return 1
+            }
+            if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+              echo "Portainer ${method} ${url} failed with HTTP status ${status}" >&2
+              cat "$out" >&2
+              return 1
+            fi
+          }
+
+          # --- Find the stack by name; never hardcode Id or EndpointId ---
+          request GET "${PORTAINER_URL}/api/stacks" "$tmpdir/stacks.json" \
+            -H "X-API-Key: ${PORTAINER_API_KEY}"
+
+          match_count=$(jq --arg name "$STACK_NAME" \
+            '[.[] | select(.Name == $name)] | length' "$tmpdir/stacks.json")
+          if [ "$match_count" -eq 0 ]; then
+            echo "Portainer stack named '${STACK_NAME}' not found in GET /api/stacks" >&2
+            cat "$tmpdir/stacks.json" >&2
+            exit 1
+          fi
+          if [ "$match_count" -gt 1 ]; then
+            echo "More than one Portainer stack named '${STACK_NAME}'; refusing to guess" >&2
+            jq --arg name "$STACK_NAME" \
+              '[.[] | select(.Name == $name) | {Id, EndpointId}]' \
+              "$tmpdir/stacks.json" >&2
+            exit 1
+          fi
+
+          stack_id=$(jq -r --arg name "$STACK_NAME" \
+            '.[] | select(.Name == $name) | .Id' "$tmpdir/stacks.json")
+          endpoint_id=$(jq -r --arg name "$STACK_NAME" \
+            '.[] | select(.Name == $name) | .EndpointId' "$tmpdir/stacks.json")
+          if [ -z "$stack_id" ] || [ "$stack_id" = "null" ]; then
+            echo "Portainer stack '${STACK_NAME}' has no Id" >&2
+            cat "$tmpdir/stacks.json" >&2
+            exit 1
+          fi
+          if [ -z "$endpoint_id" ] || [ "$endpoint_id" = "null" ]; then
+            echo "Portainer stack '${STACK_NAME}' has no EndpointId" >&2
+            cat "$tmpdir/stacks.json" >&2
+            exit 1
+          fi
+          echo "Found stack '${STACK_NAME}': Id=${stack_id}, EndpointId=${endpoint_id}"
+
+          # --- Read the stack detail to preserve the existing Env array ---
+          request GET "${PORTAINER_URL}/api/stacks/${stack_id}" "$tmpdir/stack.json" \
+            -H "X-API-Key: ${PORTAINER_API_KEY}"
+          env_json=$(jq -c '.Env // []' "$tmpdir/stack.json")
+
+          # --- Read the current stack file so the redeploy changes nothing ---
+          request GET "${PORTAINER_URL}/api/stacks/${stack_id}/file" "$tmpdir/file.json" \
+            -H "X-API-Key: ${PORTAINER_API_KEY}"
+          jq -j '.StackFileContent // empty' "$tmpdir/file.json" > "$tmpdir/stack-file.yml"
+          if [ ! -s "$tmpdir/stack-file.yml" ]; then
+            echo "Portainer /api/stacks/${stack_id}/file returned no StackFileContent" >&2
+            cat "$tmpdir/file.json" >&2
+            exit 1
+          fi
+
+          # --- PUT the unchanged file back with the same Env and PullImage ---
+          jq -n --rawfile compose "$tmpdir/stack-file.yml" --argjson env "$env_json" \
+            '{StackFileContent: $compose, Env: $env, PullImage: true}' \
+            > "$tmpdir/body.json"
+
+          request PUT "${PORTAINER_URL}/api/stacks/${stack_id}?endpointId=${endpoint_id}" \
+            "$tmpdir/put.json" \
+            -H "X-API-Key: ${PORTAINER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data-binary "@$tmpdir/body.json"
+
+          echo "Portainer stack '${STACK_NAME}' redeployed (PUT accepted)"
+
+  # The vortex host runs its own Portainer with separate credentials.
+  deploy-vortex:
+    name: Redeploy Portainer stack archview on vortex
+    runs-on: [self-hosted, paseo]
+    needs: [merge]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Redeploy stack via Portainer API
+        shell: bash
+        env:
+          PORTAINER_URL: ${{ secrets.PORTAINER_VORTEX_URL }}
+          PORTAINER_API_KEY: ${{ secrets.PORTAINER_VORTEX_API_KEY }}
+          STACK_NAME: archview
+        run: |
+          set -euo pipefail
+
+          if [ -z "${PORTAINER_URL:-}" ]; then
+            echo "PORTAINER_VORTEX_URL secret is not set" >&2
+            exit 1
+          fi
+          if [ -z "${PORTAINER_API_KEY:-}" ]; then
+            echo "PORTAINER_VORTEX_API_KEY secret is not set" >&2
             exit 1
           fi
 
