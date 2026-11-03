@@ -140,7 +140,18 @@ type SystemSnapshot struct {
 	Processes   int               `json:"processes"`
 	Disks       []DiskSnapshot    `json:"disks"`
 	Network     []NetworkSnapshot `json:"network"`
+
+	// FailedLogins is the number of SSH password failures the host recorded
+	// in the last hour. It is nil when the host could not report a count
+	// (collector missing, file missing or unreadable, or the host reported
+	// "unavailable"), so a missing count is never mistaken for zero.
+	FailedLogins *int `json:"failedLogins"`
+	// FailedLoginsWindow is the time window FailedLogins covers.
+	FailedLoginsWindow string `json:"failedLoginsWindow"`
 }
+
+// failedLoginsWindow is the window covered by the host's SSH failure counter.
+const failedLoginsWindow = "1h"
 
 type MemorySnapshot struct {
 	TotalBytes     int64   `json:"totalBytes"`
@@ -1138,14 +1149,16 @@ func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
 	osName, _ := readOSRelease(s.cfg.HostRoot, s.cfg.HostProc)
 
 	return SystemSnapshot{
-		Hostname:    hostname,
-		OS:          osName,
-		CPUCount:    runtime.NumCPU(),
-		LoadAverage: load,
-		Memory:      memory,
-		Processes:   processes,
-		Disks:       disks,
-		Network:     network,
+		Hostname:           hostname,
+		OS:                 osName,
+		CPUCount:           runtime.NumCPU(),
+		LoadAverage:        load,
+		Memory:             memory,
+		Processes:          processes,
+		Disks:              disks,
+		Network:            network,
+		FailedLogins:       readFailedLogins(s.cfg.HostRoot),
+		FailedLoginsWindow: failedLoginsWindow,
 	}, nil
 }
 
@@ -1251,6 +1264,27 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 func writeError(w http.ResponseWriter, err error) {
 	log.Printf("archview: request failed: %v", err)
 	writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal server error"})
+}
+
+// readFailedLogins reads the host's recent SSH password-failure count. The
+// collector writes a single line holding either a non-negative integer or the
+// literal "unavailable". Anything else — including a missing or unreadable
+// file — yields nil so callers can distinguish "no data" from a clean zero.
+func readFailedLogins(root string) *int {
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	path := filepath.Join(root, "var", "lib", "ssh-failed-logins.txt")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	value, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || value < 0 {
+		return nil
+	}
+	return &value
 }
 
 func readOSRelease(root, procRoot string) (string, error) {

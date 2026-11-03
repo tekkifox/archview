@@ -74,12 +74,23 @@ return host internals or anything that could carry a secret:
   count, memory total and container/image counts — no kernel, root directory,
   server version or API version;
 - `system` exposes CPU count, load average, memory, process count, disk byte
-  totals and percentages, and network byte counters — no kernel, uptime,
-  architecture, mount points, filesystems or interface names;
+  totals and percentages, network byte counters, and the host's SSH password
+  failures for the last hour (`failedLogins`, with `failedLoginsWindow` set to
+  `"1h"`) — no kernel, uptime, architecture, mount points, filesystems or
+  interface names. `failedLogins` is `null` when the host cannot report a
+  count (the collector is absent, the file is missing or unreadable, or the
+  host reported `unavailable`); it is never coerced to `0`;
 - `NodeSummary.details` only carries a container's `image` and `state`.
 
 `hostname` and `os` are kept deliberately so a dashboard can identify which host
 it is viewing. Telemetry derives the same safe values.
+
+The SSH failure count comes from
+`<HOST_ROOT>/var/lib/ssh-failed-logins.txt`, a single line written by the host's
+collector. A number is reported as-is; `unavailable`, an unreadable file, or a
+host without the collector produces `"failedLogins": null` while the request
+still succeeds. The `/api/architecture` telemetry block exposes the same values
+on `hosts[]` and mirrors them into `metrics`.
 
 ## Quick start
 
@@ -377,7 +388,7 @@ For Google specifically:
 | `DOCKER_API_VERSION` | `v1.41` | Docker API version prefix |
 | `HOST_PROC` | `/host/proc` | Mounted host `/proc` |
 | `HOST_SYS` | `/host/sys` | Mounted host `/sys` |
-| `HOST_ROOT` | `/host/root` | Mounted host root (for disk stats) |
+| `HOST_ROOT` | `/host/root` | Mounted host root (for disk stats and `/var/lib/ssh-failed-logins.txt`) |
 | `CORS_ALLOWED_ORIGINS` | — | Comma-separated exact origins; empty means same-origin only |
 | `TRUST_PROXY_HEADERS` | `false` | Honour `X-Forwarded-Proto`/`X-Forwarded-Host` |
 | `FULL_DOCKER_PROJECTS` | — | `1`, `true` or `all` returns the full host and Docker overview for every request; otherwise a comma-separated list of normalised project labels that receive it, matched case-sensitively after trimming |
