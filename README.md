@@ -34,6 +34,7 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 | `GET /api/architecture` | protected | Host overview with telemetry; optional `project` scopes it |
 | `GET /api/docker` | protected | Docker daemon, container and image inventory |
 | `GET /api/system` | protected | Linux host metrics |
+| `POST /api/endpoints/{key}/prune-images` | protected (admin) | Prunes dangling images on a managed host; `?all=true` prunes all unused images |
 
 Protected endpoints return `401` with a `WWW-Authenticate: Bearer` header when no valid credential is present.
 
@@ -233,6 +234,91 @@ with `"method": "client_credentials"` and `"sub": "client:<client_id>"`.
 In `oidc` mode, JWTs signed by the provider are accepted. ArchView verifies the signature against the provider JWKS and checks `exp`, `nbf`, `iss` and `aud`. Accepted audiences default to `OAUTH_CLIENT_ID` and can be extended with `OAUTH_AUDIENCES`.
 
 
+## Endpoint management
+
+ArchView can prune Docker images on the hosts it manages. It does not need SSH
+or a new privileged daemon: each managed host is a Portainer endpoint, and
+ArchView calls Portainer's Docker proxy API with a Portainer API key.
+
+Configuration is explicit:
+
+```bash
+# Managed hosts: key=Portainer-endpoint-id pairs. A JSON array or object is
+# also accepted. Empty disables endpoint management (the default).
+ENDPOINTS=host1=1,host2=2
+# Or:
+# ENDPOINTS=[{"key":"host1","portainerEndpointId":1},{"key":"host2","portainerEndpointId":2}]
+# ENDPOINTS={"host1":1,"host2":2}
+
+# The Portainer hub and an API key that can reach its endpoints.
+PORTAINER_URL=https://portainer.example.com:9443
+PORTAINER_API_KEY=replace-with-a-portainer-api-key
+# Only for a hub with a self-signed certificate on a trusted network.
+PORTAINER_INSECURE_SKIP_VERIFY=false
+
+# Destructive routes are limited to these identities. At least one list is
+# required when authentication is enabled; both empty makes the route fail
+# closed with 403. Client IDs are OAuth client IDs, not application names.
+ENDPOINTS_ADMIN_EMAILS=admin@example.com
+ENDPOINTS_ADMIN_CLIENTS=archview-cron
+```
+
+`ENDPOINTS` is empty by default, so an unconfigured ArchView behaves exactly as
+before. If `ENDPOINTS` is set but `PORTAINER_URL` or `PORTAINER_API_KEY` is
+missing, the service refuses to start. If a request reaches the route without a
+usable registry or admin configuration, it returns a clear error instead of
+pretending to succeed.
+
+The route is `POST /api/endpoints/{key}/prune-images` where `{key}` is the stable
+key from `ENDPOINTS`. It requires an authenticated **administrator**: a session
+or bearer token whose email is in `ENDPOINTS_ADMIN_EMAILS`, or a
+client-credentials token whose client ID is in `ENDPOINTS_ADMIN_CLIENTS`. Other
+authenticated callers receive `403`. With `AUTH_MODE=none` the whole API is
+unauthenticated, including this route.
+
+By default only dangling images are pruned (Docker's
+`filters={"dangling":["true"]}`). Pass `?all=true` to opt in to pruning every
+unused image:
+
+```bash
+# Prune dangling images (safe default).
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  "https://archview.example.com/api/endpoints/host1/prune-images"
+
+# Prune all unused images (aggressive; read the response before assuming it
+# removed anything).
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  "https://archview.example.com/api/endpoints/host1/prune-images?all=true"
+```
+
+The response reports what Docker removed and how much space was reclaimed:
+
+```json
+{
+  "endpoint": "host1",
+  "portainerEndpointId": 1,
+  "mode": "dangling",
+  "imagesDeleted": [
+    {"deleted": "sha256:..."},
+    {"untagged": "app:old"}
+  ],
+  "deletedCount": 2,
+  "spaceReclaimedBytes": 123456789
+}
+```
+
+A non-2xx response from Portainer is returned as `502` with Portainer's status
+and message; it is never reported as a successful prune. Unknown endpoint keys
+return `404`, and a deployment with `ENDPOINTS` set but Portainer credentials
+missing fails at startup rather than reporting a no-op success.
+
+For the daily cron on a managed host, use a dedicated client-credentials client,
+list its Client ID in `ENDPOINTS_ADMIN_CLIENTS`, and call the route with the
+token from your identity provider.
+
+
 ## Troubleshooting login
 
 `login state is missing or expired` means the callback arrived without the
@@ -276,6 +362,12 @@ For Google specifically:
 | `CORS_ALLOWED_ORIGINS` | — | Comma-separated exact origins; empty means same-origin only |
 | `TRUST_PROXY_HEADERS` | `false` | Honour `X-Forwarded-Proto`/`X-Forwarded-Host` |
 | `FULL_DOCKER_PROJECTS` | — | `1`, `true` or `all` returns the full host and Docker overview for every request; otherwise a comma-separated list of normalised project labels that receive it, matched case-sensitively after trimming |
+| `ENDPOINTS` | — | Managed hosts as comma-separated `key=Portainer-endpoint-id` pairs, or a JSON array/object. Empty disables endpoint management |
+| `PORTAINER_URL` | — | Portainer hub base URL; required when `ENDPOINTS` is non-empty |
+| `PORTAINER_API_KEY` | — | Portainer API key used for endpoint-management calls; required when `ENDPOINTS` is non-empty |
+| `PORTAINER_INSECURE_SKIP_VERIFY` | `false` | Skip TLS verification for a Portainer hub with a self-signed certificate |
+| `ENDPOINTS_ADMIN_EMAILS` | — | Comma-separated emails allowed to call endpoint-management routes |
+| `ENDPOINTS_ADMIN_CLIENTS` | — | Comma-separated OAuth client IDs allowed to call endpoint-management routes |
 
 ### Authentication
 
