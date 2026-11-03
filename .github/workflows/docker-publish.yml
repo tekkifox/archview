@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, paseo]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -34,7 +34,7 @@ jobs:
 
   # Build linux/amd64 on the native x86 runner and push the image by digest only.
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, paseo]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -138,7 +138,7 @@ jobs:
 
   # Join both platform digests into the published multi-arch manifest.
   merge:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, paseo]
     needs: [build, build-arm64]
     steps:
       - name: Download amd64 digest
