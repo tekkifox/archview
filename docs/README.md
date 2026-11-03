@@ -5,7 +5,7 @@ binary and served from `/docs/openapi.yaml`.
 
 ## Public endpoints
 
-- `GET /` — service index and auth metadata
+- `GET /` — service identity (`service`, `version`, `description`)
 - `GET /healthz` — liveness
 - `GET /readyz` — readiness (also checks the identity provider)
 - `GET /docs` — Swagger UI

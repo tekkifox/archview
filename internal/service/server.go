@@ -361,8 +361,10 @@ func withSecurityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// index describes the service so deployments can discover the API without a
-// bundled frontend.
+// index identifies the service for liveness checks. It deliberately does not
+// enumerate the API surface: the route list, auth metadata and machine
+// credentials belong to the login flow and the OpenAPI document, not to an
+// unauthenticated response.
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -372,16 +374,6 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		"service":     "archview",
 		"description": "Docker daemon and Linux host telemetry API.",
 		"version":     "1",
-		"auth":        s.auth.PublicInfo(),
-		"endpoints": []string{
-			"/healthz",
-			"/readyz",
-			"/docs",
-			"/api/architecture",
-			"/api/docker",
-			"/api/system",
-			"/api/endpoints/{key}/prune-images",
-		},
 	})
 }
 

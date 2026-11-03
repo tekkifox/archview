@@ -21,7 +21,7 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 
 | Path | Auth | Description |
 | --- | --- | --- |
-| `GET /` | public | Service index and auth metadata (JSON) |
+| `GET /` | public | Service identity (`service`, `version`, `description`) as JSON |
 | `GET /healthz` | public | Liveness probe |
 | `GET /readyz` | public | Readiness probe (also checks the identity provider) |
 | `GET /docs` | public | Swagger UI |
@@ -491,7 +491,7 @@ OAUTH_REDIRECT_URL=https://archview.example.com/auth/callback
 OAUTH_SCOPES="openid profile email"
 # Optional: restrict who may log in.
 OAUTH_ALLOWED_EMAILS=you@example.com
-# Where the browser lands after logging in ("/" shows the JSON service index).
+# Where the browser lands after logging in ("/" shows the JSON service identity).
 OAUTH_POST_LOGIN_REDIRECT=/
 
 # 32+ random bytes: openssl rand -base64 48. Identical on every replica.
