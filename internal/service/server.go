@@ -148,10 +148,24 @@ type SystemSnapshot struct {
 	FailedLogins *int `json:"failedLogins"`
 	// FailedLoginsWindow is the time window FailedLogins covers.
 	FailedLoginsWindow string `json:"failedLoginsWindow"`
+	// FailedLoginUsers is the per-user breakdown of the same failures. It is
+	// always an array, never nil: an unreadable or malformed collector file
+	// yields an empty array so the response still succeeds.
+	FailedLoginUsers []FailedLoginUser `json:"failedLoginUsers"`
+}
+
+// FailedLoginUser is one username targeted by SSH password failures and the
+// number of failures recorded for it.
+type FailedLoginUser struct {
+	User  string `json:"user"`
+	Count int    `json:"count"`
 }
 
 // failedLoginsWindow is the window covered by the host's SSH failure counter.
 const failedLoginsWindow = "1h"
+
+// maxFailedLoginUsers is the most per-user entries ever published.
+const maxFailedLoginUsers = 20
 
 type MemorySnapshot struct {
 	TotalBytes     int64   `json:"totalBytes"`
@@ -1159,6 +1173,7 @@ func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
 		Network:            network,
 		FailedLogins:       readFailedLogins(s.cfg.HostRoot),
 		FailedLoginsWindow: failedLoginsWindow,
+		FailedLoginUsers:   readFailedLoginUsers(s.cfg.HostRoot),
 	}, nil
 }
 
@@ -1285,6 +1300,56 @@ func readFailedLogins(root string) *int {
 		return nil
 	}
 	return &value
+}
+
+// readFailedLoginUsers reads the host's per-user SSH password-failure
+// breakdown. The collector writes a JSON document such as
+//
+//	{"windowMinutes":60,"total":42,"users":[{"user":"root","count":30}]}
+//
+// Only well-formed entries survive: an entry is dropped when its user is not a
+// non-empty string or its count is not a non-negative integer. A missing,
+// unreadable or malformed file yields an empty (never nil) slice, and at most
+// maxFailedLoginUsers entries are returned in the file's order.
+func readFailedLoginUsers(root string) []FailedLoginUser {
+	users := make([]FailedLoginUser, 0)
+	if strings.TrimSpace(root) == "" {
+		return users
+	}
+	data, err := os.ReadFile(filepath.Join(root, "var", "lib", "ssh-failed-users.json"))
+	if err != nil {
+		return users
+	}
+
+	var doc struct {
+		Users []json.RawMessage `json:"users"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return users
+	}
+
+	for _, raw := range doc.Users {
+		var entry struct {
+			User  json.RawMessage `json:"user"`
+			Count json.RawMessage `json:"count"`
+		}
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			continue
+		}
+		var user string
+		if err := json.Unmarshal(entry.User, &user); err != nil || user == "" {
+			continue
+		}
+		var count int
+		if err := json.Unmarshal(entry.Count, &count); err != nil || count < 0 {
+			continue
+		}
+		users = append(users, FailedLoginUser{User: user, Count: count})
+		if len(users) == maxFailedLoginUsers {
+			break
+		}
+	}
+	return users
 }
 
 func readOSRelease(root, procRoot string) (string, error) {

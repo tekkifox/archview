@@ -117,6 +117,12 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		}
 		host["failedLogins"] = failedLogins
 		host["failedLoginsWindow"] = window
+		// Per-user breakdown of the same window. Always an array, never null.
+		users := sys.FailedLoginUsers
+		if users == nil {
+			users = []FailedLoginUser{}
+		}
+		host["failedLoginUsers"] = users
 
 		hosts = append(hosts, host)
 	}
@@ -181,6 +187,7 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		}
 		metrics["failedLogins"] = h["failedLogins"]
 		metrics["failedLoginsWindow"] = h["failedLoginsWindow"]
+		metrics["failedLoginUsers"] = h["failedLoginUsers"]
 	}
 
 	telemetry["hosts"] = hosts
