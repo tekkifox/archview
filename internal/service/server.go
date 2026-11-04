@@ -141,6 +141,13 @@ type SystemSnapshot struct {
 	Disks       []DiskSnapshot    `json:"disks"`
 	Network     []NetworkSnapshot `json:"network"`
 
+	// CPUPercent is measured host CPU utilisation over a short window, as a
+	// percentage of all CPU time. It is nil when the reading cannot be taken
+	// (no <HOST_PROC>/stat, unreadable or malformed, or no time elapsed
+	// between the two readings), so a missing measurement is never mistaken
+	// for an idle host.
+	CPUPercent *float64 `json:"cpuPercent,omitempty"`
+
 	// FailedLogins is the number of SSH password failures the host recorded
 	// in the last hour. It is nil when the host could not report a count
 	// (collector missing, file missing or unreadable, or the host reported
@@ -1193,6 +1200,7 @@ func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
 	_ = ctx
 	hostname, _ := os.Hostname()
 	load, _ := readLoadAverage(s.cfg.HostProc)
+	cpuPercent := readCPUPercent(s.cfg.HostProc)
 	memory, _ := readMemInfo(s.cfg.HostProc)
 	disks, _ := readMountsAndDisks(s.cfg.HostProc, s.cfg.HostRoot)
 	network, _ := readNetworkStats(s.cfg.HostProc)
