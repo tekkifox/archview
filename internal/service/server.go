@@ -152,6 +152,26 @@ type SystemSnapshot struct {
 	// always an array, never nil: an unreadable or malformed collector file
 	// yields an empty array so the response still succeeds.
 	FailedLoginUsers []FailedLoginUser `json:"failedLoginUsers"`
+
+	// SSHLogins is the number of accepted SSH logins the host recorded in the
+	// collector's hourly window. It is nil when the host could not report a
+	// count (collector missing, file missing or unreadable, malformed content,
+	// or a total that is not a non-negative integer), so a missing count is
+	// never mistaken for zero.
+	SSHLogins *int `json:"sshLogins"`
+	// SSHLoginUsers is the per-user breakdown of the same accepted logins. It
+	// is always an array, never nil: an unreadable or malformed collector file
+	// yields an empty array so the response still succeeds.
+	SSHLoginUsers []SSHLoginUser `json:"sshLoginUsers"`
+	// SSHLoginsToday is the number of accepted SSH logins the host recorded
+	// since local midnight, with the same null semantics as SSHLogins.
+	SSHLoginsToday *int `json:"sshLoginsToday"`
+	// SSHLoginUsersToday is the per-user breakdown of the same daily logins,
+	// with the same array semantics as SSHLoginUsers.
+	SSHLoginUsersToday []SSHLoginUser `json:"sshLoginUsersToday"`
+	// SSHLoginsTodaySince is the daily file's "since" timestamp, verbatim,
+	// when it parses as RFC 3339; otherwise nil.
+	SSHLoginsTodaySince *string `json:"sshLoginsTodaySince"`
 }
 
 // FailedLoginUser is one username targeted by SSH password failures and the
@@ -160,6 +180,23 @@ type FailedLoginUser struct {
 	User  string `json:"user"`
 	Count int    `json:"count"`
 }
+
+// SSHLoginUser is one username with accepted SSH logins and the number of
+// logins recorded for it.
+type SSHLoginUser struct {
+	User  string `json:"user"`
+	Count int    `json:"count"`
+}
+
+// sshLoginUsersFile holds the hourly accepted-login breakdown written by the
+// host's collector.
+const sshLoginUsersFile = "ssh-login-users.json"
+
+// sshLoginsTodayFile holds the accepted logins recorded since local midnight.
+const sshLoginsTodayFile = "ssh-logins-today.json"
+
+// maxSSHLoginUsers is the most per-user entries ever published.
+const maxSSHLoginUsers = 20
 
 // failedLoginsWindow is the window covered by the host's SSH failure counter.
 const failedLoginsWindow = "1h"
@@ -1161,19 +1198,26 @@ func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
 	network, _ := readNetworkStats(s.cfg.HostProc)
 	processes, _ := countProcesses(s.cfg.HostProc)
 	osName, _ := readOSRelease(s.cfg.HostRoot, s.cfg.HostProc)
+	hourlyLogins := readSSHLogins(s.cfg.HostRoot)
+	dailyLogins := readSSHLoginsToday(s.cfg.HostRoot)
 
 	return SystemSnapshot{
-		Hostname:           hostname,
-		OS:                 osName,
-		CPUCount:           runtime.NumCPU(),
-		LoadAverage:        load,
-		Memory:             memory,
-		Processes:          processes,
-		Disks:              disks,
-		Network:            network,
-		FailedLogins:       readFailedLogins(s.cfg.HostRoot),
-		FailedLoginsWindow: failedLoginsWindow,
-		FailedLoginUsers:   readFailedLoginUsers(s.cfg.HostRoot),
+		Hostname:            hostname,
+		OS:                  osName,
+		CPUCount:            runtime.NumCPU(),
+		LoadAverage:         load,
+		Memory:              memory,
+		Processes:           processes,
+		Disks:               disks,
+		Network:             network,
+		FailedLogins:        readFailedLogins(s.cfg.HostRoot),
+		FailedLoginsWindow:  failedLoginsWindow,
+		FailedLoginUsers:    readFailedLoginUsers(s.cfg.HostRoot),
+		SSHLogins:           hourlyLogins.Total,
+		SSHLoginUsers:       hourlyLogins.Users,
+		SSHLoginsToday:      dailyLogins.Total,
+		SSHLoginUsersToday:  dailyLogins.Users,
+		SSHLoginsTodaySince: dailyLogins.Since,
 	}, nil
 }
 
@@ -1352,6 +1396,92 @@ func readFailedLoginUsers(root string) []FailedLoginUser {
 	return users
 }
 
+// sshLoginReport is one parsed accepted-login collector document. Total and
+// Since are nil when the file did not supply a usable value; Users is always a
+// non-nil slice so callers can publish an empty array.
+type sshLoginReport struct {
+	Total *int
+	Users []SSHLoginUser
+	Since *string
+}
+
+// readSSHLogins reads the host's hourly accepted-SSH-login report from
+// <HOST_ROOT>/var/lib/ssh-login-users.json.
+func readSSHLogins(root string) sshLoginReport {
+	return readSSHLoginReport(root, sshLoginUsersFile)
+}
+
+// readSSHLoginsToday reads the host's daily accepted-SSH-login report from
+// <HOST_ROOT>/var/lib/ssh-logins-today.json.
+func readSSHLoginsToday(root string) sshLoginReport {
+	return readSSHLoginReport(root, sshLoginsTodayFile)
+}
+
+// readSSHLoginReport parses one accepted-login collector document such as
+//
+//	{"date":"2026-11-03","since":"2026-11-03T00:05:00Z","total":497,
+//	 "users":[{"user":"root","count":288}]}
+//
+// The total survives only as a non-negative integer, the since value only when
+// it parses as RFC 3339 (and is returned verbatim), and each user entry only
+// when its user is a non-empty string and its count is a non-negative integer.
+// A missing, unreadable or malformed file yields no total, no since and an
+// empty (never nil) user slice. At most maxSSHLoginUsers entries are returned
+// in the file's order. Usernames are never logged or returned in errors.
+func readSSHLoginReport(root, file string) sshLoginReport {
+	report := sshLoginReport{Users: make([]SSHLoginUser, 0)}
+	if strings.TrimSpace(root) == "" {
+		return report
+	}
+	data, err := os.ReadFile(filepath.Join(root, "var", "lib", file))
+	if err != nil {
+		return report
+	}
+
+	var doc struct {
+		Total json.RawMessage   `json:"total"`
+		Since json.RawMessage   `json:"since"`
+		Users []json.RawMessage `json:"users"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return report
+	}
+
+	var total *int
+	if err := json.Unmarshal(doc.Total, &total); err == nil && total != nil && *total >= 0 {
+		report.Total = total
+	}
+
+	var since *string
+	if err := json.Unmarshal(doc.Since, &since); err == nil && since != nil {
+		if _, err := time.Parse(time.RFC3339, *since); err == nil {
+			report.Since = since
+		}
+	}
+
+	for _, raw := range doc.Users {
+		var entry struct {
+			User  json.RawMessage `json:"user"`
+			Count json.RawMessage `json:"count"`
+		}
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			continue
+		}
+		var user *string
+		if err := json.Unmarshal(entry.User, &user); err != nil || user == nil || *user == "" {
+			continue
+		}
+		var count *int
+		if err := json.Unmarshal(entry.Count, &count); err != nil || count == nil || *count < 0 {
+			continue
+		}
+		report.Users = append(report.Users, SSHLoginUser{User: *user, Count: *count})
+		if len(report.Users) == maxSSHLoginUsers {
+			break
+		}
+	}
+	return report
+}
 func readOSRelease(root, procRoot string) (string, error) {
 	paths := []string{
 		filepath.Join(root, "etc", "os-release"),

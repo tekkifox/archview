@@ -538,6 +538,59 @@ components:
             non-empty string or its `count` is not a non-negative integer.
           items:
             $ref: '#/components/schemas/FailedLoginUser'
+        sshLogins:
+          type: [integer, 'null']
+          description: |
+            Accepted SSH logins the host recorded in the collector's hourly
+            window, read from `<HOST_ROOT>/var/lib/ssh-login-users.json`.
+            `null` when the host cannot report a count (collector absent, file
+            missing or unreadable, malformed JSON, or a `total` that is not a
+            non-negative integer). Never coerced to `0`.
+        sshLoginUsers:
+          type: array
+          maxItems: 20
+          description: |
+            Per-user breakdown of the accepted SSH logins reported by
+            `sshLogins`, read from `<HOST_ROOT>/var/lib/ssh-login-users.json`
+            and kept in the file's order. Always an array, never `null`: a
+            missing, unreadable or malformed file yields an empty array, and an
+            entry is dropped when its `user` is not a non-empty string or its
+            `count` is not a non-negative integer.
+          items:
+            $ref: '#/components/schemas/SSHLoginUser'
+        sshLoginsToday:
+          type: [integer, 'null']
+          description: |
+            Accepted SSH logins the host recorded since local midnight, read
+            from `<HOST_ROOT>/var/lib/ssh-logins-today.json`. `null` under the
+            same conditions as `sshLogins`, and never coerced to `0`.
+        sshLoginUsersToday:
+          type: array
+          maxItems: 20
+          description: |
+            Per-user breakdown of the accepted logins reported by
+            `sshLoginsToday`, read from
+            `<HOST_ROOT>/var/lib/ssh-logins-today.json`. Same order and
+            validation rules as `sshLoginUsers`; always an array, never `null`.
+          items:
+            $ref: '#/components/schemas/SSHLoginUser'
+        sshLoginsTodaySince:
+          type: [string, 'null']
+          description: |
+            The daily collector file's `since` value, returned verbatim when it
+            parses as an RFC 3339 timestamp and `null` otherwise.
+    SSHLoginUser:
+      type: object
+      properties:
+        user:
+          type: string
+          minLength: 1
+          description: Username with accepted SSH logins.
+        count:
+          type: integer
+          minimum: 0
+          description: Accepted logins recorded for this user in the same window as the total.
+      required: [user, count]
     FailedLoginUser:
       type: object
       properties:

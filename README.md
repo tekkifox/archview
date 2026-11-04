@@ -84,6 +84,10 @@ return host internals or anything that could carry a secret:
   `{"user","count"}` objects in count-descending order, at most 20 of them, and
   an entry is dropped when its `user` is not a non-empty string or its `count`
   is not a non-negative integer;
+- the same `system` payload carries accepted SSH logins: `sshLogins` for the
+  collector's hourly window and `sshLoginsToday` since local midnight, each with
+  a per-user breakdown (`sshLoginUsers`, `sshLoginUsersToday`) and the daily
+  window start (`sshLoginsTodaySince`);
 - `NodeSummary.details` only carries a container's `image` and `state`.
 
 `hostname` and `os` are kept deliberately so a dashboard can identify which host
@@ -110,6 +114,32 @@ a non-empty string or whose `count` is not a non-negative integer are dropped.
 Username values are never written to logs or error messages. The
 `/api/architecture` telemetry block exposes the same values on `hosts[]` and
 mirrors both `failedLogins` and `failedLoginUsers` into `metrics`.
+
+Accepted SSH logins come from two further files the same collector writes.
+`<HOST_ROOT>/var/lib/ssh-login-users.json` covers the hourly window:
+
+```json
+{"windowMinutes":60,"total":12,"users":[{"user":"root","count":9},{"user":"ross","count":3}]}
+```
+
+`sshLogins` reports its `total`, and `sshLoginUsers` its per-user entries, with
+the same validation, ordering, 20-entry cap and never-`null` array behaviour as
+`failedLoginUsers`. `<HOST_ROOT>/var/lib/ssh-logins-today.json` covers the time
+since local midnight:
+
+```json
+{"date":"2026-11-03","since":"2026-11-03T00:05:00Z","total":497,"users":[{"user":"root","count":288}]}
+```
+
+`sshLoginsToday` reports its `total` and `sshLoginUsersToday` its per-user
+entries, under the same rules. `sshLoginsTodaySince` carries the file's `since`
+value verbatim when it parses as an RFC 3339 timestamp, and is `null`
+otherwise. `sshLogins` and `sshLoginsToday` are `null` — never `0` — when the
+file is missing, unreadable or malformed, or when `total` is not a non-negative
+integer. A `total` supplied as a string, for example, is rejected. Usernames
+are never written to logs or error messages. The `/api/architecture` telemetry
+block exposes all five values on `hosts[]` and mirrors them into `metrics`
+beside `failedLogins`.
 
 ## Quick start
 
