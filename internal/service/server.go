@@ -1214,6 +1214,7 @@ func (s *Server) collectSystem(ctx context.Context) (SystemSnapshot, error) {
 		OS:                  osName,
 		CPUCount:            runtime.NumCPU(),
 		LoadAverage:         load,
+		CPUPercent:          cpuPercent,
 		Memory:              memory,
 		Processes:           processes,
 		Disks:               disks,
