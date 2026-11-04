@@ -16,17 +16,6 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 
 	sys := resp.System
 	if sys.Hostname != "" {
-		// CPU estimate: try to estimate percent from loadAverage[0] / CPUCount
-		var cpuPercent *float64
-		if len(sys.LoadAverage) > 0 && sys.CPUCount > 0 {
-			first := sys.LoadAverage[0]
-			est := (first / float64(sys.CPUCount)) * 100.0
-			// clamp and round to one decimal
-			est = math.Round(est*10) / 10
-			cpuPercent = new(float64)
-			*cpuPercent = est
-		}
-
 		// Memory
 		var memUsed *int64
 		var memTotal *int64
@@ -81,8 +70,11 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 			"loadAverage": sys.LoadAverage,
 		}
 
-		if cpuPercent != nil {
-			host["cpu"] = *cpuPercent
+		// CPU is the measured utilisation from CPUPercent; load average is a
+		// separate signal and stays in loadAverage. Omit the figure entirely
+		// when it could not be measured rather than reporting zero.
+		if sys.CPUPercent != nil {
+			host["cpu"] = *sys.CPUPercent
 		}
 		if memUsed != nil && memTotal != nil {
 			host["memoryUsedBytes"] = *memUsed

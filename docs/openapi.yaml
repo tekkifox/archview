@@ -503,6 +503,18 @@ components:
           type: array
           items:
             type: number
+        cpuPercent:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: |
+            Measured CPU utilisation over a short window (two readings of
+            `<HOST_PROC>/stat` about 250 ms apart), as a percentage of all CPU
+            time: busy is every counter except `idle` and `iowait`. Rounded to
+            one decimal. Omitted when the reading cannot be taken (missing,
+            unreadable or malformed `stat`, or no CPU time elapsed between the
+            readings), never coerced to `0`. This is not the load average, which
+            is published separately in `loadAverage`.
         memory:
           $ref: '#/components/schemas/MemorySnapshot'
         processes:
