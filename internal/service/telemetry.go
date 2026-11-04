@@ -116,6 +116,36 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		}
 		host["failedLoginUsers"] = users
 
+		// Accepted SSH logins. Same present-but-nullable contract as the
+		// failure counters, so a consumer can tell "unknown" from zero.
+		var sshLogins any
+		if sys.SSHLogins != nil {
+			sshLogins = *sys.SSHLogins
+		}
+		host["sshLogins"] = sshLogins
+		hourlyLoginUsers := sys.SSHLoginUsers
+		if hourlyLoginUsers == nil {
+			hourlyLoginUsers = []SSHLoginUser{}
+		}
+		host["sshLoginUsers"] = hourlyLoginUsers
+
+		var sshLoginsToday any
+		if sys.SSHLoginsToday != nil {
+			sshLoginsToday = *sys.SSHLoginsToday
+		}
+		host["sshLoginsToday"] = sshLoginsToday
+		dailyLoginUsers := sys.SSHLoginUsersToday
+		if dailyLoginUsers == nil {
+			dailyLoginUsers = []SSHLoginUser{}
+		}
+		host["sshLoginUsersToday"] = dailyLoginUsers
+
+		var sshLoginsTodaySince any
+		if sys.SSHLoginsTodaySince != nil {
+			sshLoginsTodaySince = *sys.SSHLoginsTodaySince
+		}
+		host["sshLoginsTodaySince"] = sshLoginsTodaySince
+
 		hosts = append(hosts, host)
 	}
 
@@ -180,6 +210,11 @@ func processOverviewTelemetry(resp OverviewResponse) map[string]any {
 		metrics["failedLogins"] = h["failedLogins"]
 		metrics["failedLoginsWindow"] = h["failedLoginsWindow"]
 		metrics["failedLoginUsers"] = h["failedLoginUsers"]
+		metrics["sshLogins"] = h["sshLogins"]
+		metrics["sshLoginUsers"] = h["sshLoginUsers"]
+		metrics["sshLoginsToday"] = h["sshLoginsToday"]
+		metrics["sshLoginUsersToday"] = h["sshLoginUsersToday"]
+		metrics["sshLoginsTodaySince"] = h["sshLoginsTodaySince"]
 	}
 
 	telemetry["hosts"] = hosts
