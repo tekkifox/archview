@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -454,11 +455,66 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// dockerProbeTimeout bounds the Docker reachability probe made by the health
+// endpoint so an unresponsive socket proxy cannot stall the health check.
+const dockerProbeTimeout = 2 * time.Second
+
+// Health failure reasons are short and machine-readable because they are read
+// back from a container's health status.
+const (
+	healthReasonDockerUnreachable = "docker: unreachable"
+	healthReasonDockerTimeout     = "docker: timeout"
+)
+
+// health reports that the process is alive and, when a Docker host is
+// explicitly configured, that the Docker API is actually reachable. An
+// unreachable daemon means sampling has stopped even though the process is
+// healthy, so that fails the check. With no Docker host configured the probe is
+// skipped: running without Docker is a configuration choice, not an outage, and
+// the response keeps its historical shape.
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	if s.cfg.DockerHost == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"time":   now,
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), dockerProbeTimeout)
+	defer cancel()
+	if reason := s.probeDocker(ctx); reason != "" {
+		log.Printf("archview: health check failed: %s", reason)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "unhealthy",
+			"reason": reason,
+			"time":   now,
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
-		"time":   time.Now().UTC().Format(time.RFC3339),
+		"time":   now,
 	})
+}
+
+// probeDocker makes a cheap Docker API call through the configured connection.
+// It returns an empty string when Docker answers and a short reason otherwise.
+// The version endpoint is used rather than a container listing so the probe is
+// safe to run at a short interval.
+func (s *Server) probeDocker(ctx context.Context) string {
+	var version struct {
+		Version string `json:"Version"`
+	}
+	if err := s.requestDocker(ctx, "/version", &version); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+			return healthReasonDockerTimeout
+		}
+		return healthReasonDockerUnreachable
+	}
+	return ""
 }
 
 // ready verifies that the service can serve authenticated traffic. Host metric

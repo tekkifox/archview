@@ -6,7 +6,7 @@ binary and served from `/docs/openapi.yaml`.
 ## Public endpoints
 
 - `GET /` — service identity (`service`, `version`, `description`)
-- `GET /healthz` — liveness
+- `GET /healthz` — liveness (also probes the configured Docker host, `503` when unreachable)
 - `GET /readyz` — readiness (also checks the identity provider)
 - `GET /docs` — Swagger UI
 - `GET /docs/openapi.yaml` — OpenAPI 3.1 document

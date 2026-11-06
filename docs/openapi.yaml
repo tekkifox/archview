@@ -9,9 +9,20 @@ paths:
   /healthz:
     get:
       summary: Health check
+      description: >-
+        Returns 200 while the process is alive. When a Docker host is configured
+        (`DOCKER_HOST`), the endpoint also makes a short version call through that
+        connection and returns 503 with a `reason` when it cannot be reached. With
+        no Docker host configured the probe is skipped.
       responses:
         '200':
           description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: The configured Docker host could not be reached
           content:
             application/json:
               schema:
@@ -370,6 +381,9 @@ components:
       properties:
         status:
           type: string
+        reason:
+          type: string
+          description: Short machine-readable failure reason, present only on 503.
         time:
           type: string
           format: date-time
