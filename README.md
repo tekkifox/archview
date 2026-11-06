@@ -659,6 +659,44 @@ through `/api/architecture` and forwards the response. Open
 `https://archview.example.com/auth/login` directly in a browser to use the
 interactive login.
 
+## Image publishing and stack redeploy
+
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)
+builds and publishes the multi-arch image on a push to `main`. Once the
+manifest is published, its `deploy` job redeploys every ArchView stack through
+the Portainer API; there are no webhooks to configure. Two Portainer instances
+are involved, each with its own repository secret pair:
+
+| Portainer | URL secret | API key secret | Stacks |
+| --- | --- | --- | --- |
+| storage | `PORTAINER_STORAGE_URL` | `PORTAINER_STORAGE_API_KEY` | `archview` (the rossmoney deployment), `storage-archview`, `photos-archview` |
+| media | `PORTAINER_MEDIA_URL` | `PORTAINER_MEDIA_API_KEY` | `paseo-archview`, `archview-mgmt`, `archview` |
+
+The stack called `archview` on the storage Portainer is the **rossmoney**
+deployment; its name does not say so. The `archview` stack on the media
+Portainer is optional and may not exist yet.
+
+For each stack the step:
+
+1. lists the stacks (`GET /api/stacks`) and matches by `Name`, because a
+   stack's `Id` and `EndpointId` change when a Portainer environment is
+   re-created;
+2. reads that stack's `Env` array (`GET /api/stacks/{id}?endpointId={ep}`);
+3. reads the current compose file (`GET /api/stacks/{id}/file?endpointId={ep}`);
+4. sends the file back unchanged with `pullImage: true` and `prune: false`
+   (`PUT /api/stacks/{id}?endpointId={ep}`), which makes Portainer pull
+   `:latest` and recreate the containers.
+
+The step prints one line per stack (`redeployed`, or `skipped (not found)`) and
+fails the job only on an HTTP error or an API key refusal. A stack that is
+missing or renamed is therefore visible in the log without blocking the other
+stacks. The API key travels only in the `X-API-Key` header, never in a URL or a
+log line.
+
+The media Portainer uses a self-signed certificate, so the step calls
+`curl -sS -k`; that flag applies to every request the step makes. The storage
+Portainer has a valid certificate.
+
 ## Microservice notes
 
 - **Stateless**: no database, no local session store, no bundled UI. Scale horizontally behind a load balancer with the same `SESSION_SECRET`.

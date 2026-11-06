@@ -201,126 +201,159 @@ jobs:
             "ghcr.io/${GITHUB_REPOSITORY}@${amd64_digest}" \
             "ghcr.io/${GITHUB_REPOSITORY}@${arm64_digest}"
 
+  # Redeploy every ArchView stack after the image is published. Stacks are
+  # matched by name because their Id and EndpointId change when Portainer
+  # environments are re-created. A stack that does not exist is reported and
+  # skipped so a renamed stack is visible without blocking the other hosts.
   deploy:
-    name: Redeploy Portainer stack ${{ matrix.stack }}
+    name: Redeploy ArchView stacks via Portainer API
     runs-on: [self-hosted, paseo]
     needs: [merge]
     if: github.ref == 'refs/heads/main'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # main publishes :latest. Stacks are matched by name because their
-          # Id and EndpointId change when Portainer environments are re-created.
-          - { stack: archview, ref: refs/heads/main }
-          - { stack: photos-archview, ref: refs/heads/main }
-          - { stack: storage-archview, ref: refs/heads/main }
     steps:
-      - name: Redeploy stack via Portainer API
-        if: github.ref == matrix.ref
+      - name: Redeploy stacks through the Portainer API
         shell: bash
         env:
-          PORTAINER_URL: ${{ secrets.PORTAINER_URL }}
-          PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
-          STACK_NAME: ${{ matrix.stack }}
+          PORTAINER_STORAGE_URL: ${{ secrets.PORTAINER_STORAGE_URL }}
+          PORTAINER_STORAGE_API_KEY: ${{ secrets.PORTAINER_STORAGE_API_KEY }}
+          PORTAINER_MEDIA_URL: ${{ secrets.PORTAINER_MEDIA_URL }}
+          PORTAINER_MEDIA_API_KEY: ${{ secrets.PORTAINER_MEDIA_API_KEY }}
         run: |
           set -euo pipefail
 
-          if [ -z "${PORTAINER_URL:-}" ]; then
-            echo "PORTAINER_URL secret is not set" >&2
-            exit 1
-          fi
-          if [ -z "${PORTAINER_API_KEY:-}" ]; then
-            echo "PORTAINER_API_KEY secret is not set" >&2
-            exit 1
-          fi
+          : "${PORTAINER_STORAGE_URL:?PORTAINER_STORAGE_URL is not set}"
+          : "${PORTAINER_STORAGE_API_KEY:?PORTAINER_STORAGE_API_KEY is not set}"
+          : "${PORTAINER_MEDIA_URL:?PORTAINER_MEDIA_URL is not set}"
+          : "${PORTAINER_MEDIA_API_KEY:?PORTAINER_MEDIA_API_KEY is not set}"
 
-          PORTAINER_URL="${PORTAINER_URL%/}"
-          tmpdir="${RUNNER_TEMP:-/tmp}/portainer-${STACK_NAME}"
+          tmpdir="${RUNNER_TEMP:-/tmp}/portainer-redeploy"
+          rm -rf "$tmpdir"
           mkdir -p "$tmpdir"
           trap 'rm -rf "$tmpdir"' EXIT
 
-          # Issue one API request, fail loudly with the response body on any
-          # non-2xx status, and leave the body in $out for the caller.
+          # Issue one API request. The key travels only in the X-API-Key header,
+          # never in a URL or a log line. Any status other than 200 fails, and
+          # the response body is printed for diagnosis.
           request() {
             local method="$1"
             local url="$2"
             local out="$3"
             shift 3
             local status
-            status=$(curl -sS -o "$out" -w '%{http_code}' -X "$method" "$@" "$url") || {
+            if ! status=$(curl -sS -k -o "$out" -w '%{http_code}' -X "$method" "$@" "$url"); then
               echo "Portainer ${method} ${url} failed before a response" >&2
               return 1
-            }
-            if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            fi
+            if [ "$status" != "200" ]; then
               echo "Portainer ${method} ${url} failed with HTTP status ${status}" >&2
-              cat "$out" >&2
+              cat "$out" >&2 || true
+              echo >&2
               return 1
             fi
           }
 
-          # --- Find the stack by name; never hardcode Id or EndpointId ---
-          request GET "${PORTAINER_URL}/api/stacks" "$tmpdir/stacks.json" \
-            -H "X-API-Key: ${PORTAINER_API_KEY}"
+          # Redeploy every named stack on one Portainer. Prints one line per
+          # stack. A stack that is absent is skipped; a request error marks the
+          # group failed and the remaining stacks are still attempted.
+          redeploy_group() {
+            local label="$1"
+            local url="$2"
+            local key="$3"
+            local stack_names="$4"
+            local list_file="${tmpdir}/${label}-stacks.json"
+            local failed=0
+            local stack name_count stack_id endpoint_id
+            local detail_file file_file stack_file body_file
 
-          match_count=$(jq --arg name "$STACK_NAME" \
-            '[.[] | select(.Name == $name)] | length' "$tmpdir/stacks.json")
-          if [ "$match_count" -eq 0 ]; then
-            echo "Portainer stack named '${STACK_NAME}' not found in GET /api/stacks" >&2
-            cat "$tmpdir/stacks.json" >&2
+            url="${url%/}"
+            if ! request GET "${url}/api/stacks" "$list_file" -H "X-API-Key: ${key}"; then
+              echo "${label}: could not list stacks" >&2
+              return 1
+            fi
+
+            for stack in $stack_names; do
+              name_count=$(jq --arg name "$stack" \
+                '[.[] | select(.Name == $name)] | length' "$list_file")
+              if [ "$name_count" -eq 0 ]; then
+                echo "${label}/${stack}: skipped (not found)"
+                continue
+              fi
+              if [ "$name_count" -gt 1 ]; then
+                echo "${label}/${stack}: error: more than one stack has that name" >&2
+                failed=1
+                continue
+              fi
+
+              stack_id=$(jq -r --arg name "$stack" \
+                '.[] | select(.Name == $name) | .Id' "$list_file")
+              endpoint_id=$(jq -r --arg name "$stack" \
+                '.[] | select(.Name == $name) | .EndpointId' "$list_file")
+              if [ -z "$stack_id" ] || [ "$stack_id" = "null" ] ||
+                [ -z "$endpoint_id" ] || [ "$endpoint_id" = "null" ]; then
+                echo "${label}/${stack}: error: missing Id or EndpointId" >&2
+                failed=1
+                continue
+              fi
+
+              detail_file="${tmpdir}/${label}-${stack}-detail.json"
+              file_file="${tmpdir}/${label}-${stack}-file.json"
+              stack_file="${tmpdir}/${label}-${stack}-stack.yml"
+              body_file="${tmpdir}/${label}-${stack}-body.json"
+
+              # Read the detail for its Env array, and the current stack file
+              # so the redeploy changes nothing but the pulled image.
+              if ! request GET "${url}/api/stacks/${stack_id}?endpointId=${endpoint_id}" \
+                "$detail_file" -H "X-API-Key: ${key}"; then
+                echo "${label}/${stack}: error: could not read stack detail" >&2
+                failed=1
+                continue
+              fi
+              if ! request GET "${url}/api/stacks/${stack_id}/file?endpointId=${endpoint_id}" \
+                "$file_file" -H "X-API-Key: ${key}"; then
+                echo "${label}/${stack}: error: could not read stack file" >&2
+                failed=1
+                continue
+              fi
+
+              jq -j '.StackFileContent // empty' "$file_file" > "$stack_file"
+              if [ ! -s "$stack_file" ]; then
+                echo "${label}/${stack}: error: no StackFileContent returned" >&2
+                failed=1
+                continue
+              fi
+
+              jq -n --rawfile content "$stack_file" \
+                --argjson env "$(jq -c '.Env // []' "$detail_file")" \
+                '{stackFileContent: $content, env: $env, prune: false, pullImage: true}' \
+                > "$body_file"
+
+              if ! request PUT "${url}/api/stacks/${stack_id}?endpointId=${endpoint_id}" \
+                "${tmpdir}/${label}-${stack}-put.json" \
+                -H "X-API-Key: ${key}" \
+                -H "Content-Type: application/json" \
+                --data-binary "@${body_file}"; then
+                echo "${label}/${stack}: error: redeploy failed" >&2
+                failed=1
+                continue
+              fi
+
+              echo "${label}/${stack}: redeployed"
+            done
+
+            return "$failed"
+          }
+
+          failed_groups=0
+          redeploy_group storage "$PORTAINER_STORAGE_URL" "$PORTAINER_STORAGE_API_KEY" \
+            "archview storage-archview photos-archview" || failed_groups=$((failed_groups + 1))
+          redeploy_group media "$PORTAINER_MEDIA_URL" "$PORTAINER_MEDIA_API_KEY" \
+            "paseo-archview archview-mgmt archview" || failed_groups=$((failed_groups + 1))
+
+          if [ "$failed_groups" -gt 0 ]; then
+            echo "Portainer redeploy failed for ${failed_groups} group(s)" >&2
             exit 1
           fi
-          if [ "$match_count" -gt 1 ]; then
-            echo "More than one Portainer stack named '${STACK_NAME}'; refusing to guess" >&2
-            jq --arg name "$STACK_NAME" \
-              '[.[] | select(.Name == $name) | {Id, EndpointId}]' \
-              "$tmpdir/stacks.json" >&2
-            exit 1
-          fi
-
-          stack_id=$(jq -r --arg name "$STACK_NAME" \
-            '.[] | select(.Name == $name) | .Id' "$tmpdir/stacks.json")
-          endpoint_id=$(jq -r --arg name "$STACK_NAME" \
-            '.[] | select(.Name == $name) | .EndpointId' "$tmpdir/stacks.json")
-          if [ -z "$stack_id" ] || [ "$stack_id" = "null" ]; then
-            echo "Portainer stack '${STACK_NAME}' has no Id" >&2
-            cat "$tmpdir/stacks.json" >&2
-            exit 1
-          fi
-          if [ -z "$endpoint_id" ] || [ "$endpoint_id" = "null" ]; then
-            echo "Portainer stack '${STACK_NAME}' has no EndpointId" >&2
-            cat "$tmpdir/stacks.json" >&2
-            exit 1
-          fi
-          echo "Found stack '${STACK_NAME}': Id=${stack_id}, EndpointId=${endpoint_id}"
-
-          # --- Read the stack detail to preserve the existing Env array ---
-          request GET "${PORTAINER_URL}/api/stacks/${stack_id}" "$tmpdir/stack.json" \
-            -H "X-API-Key: ${PORTAINER_API_KEY}"
-          env_json=$(jq -c '.Env // []' "$tmpdir/stack.json")
-
-          # --- Read the current stack file so the redeploy changes nothing ---
-          request GET "${PORTAINER_URL}/api/stacks/${stack_id}/file" "$tmpdir/file.json" \
-            -H "X-API-Key: ${PORTAINER_API_KEY}"
-          jq -j '.StackFileContent // empty' "$tmpdir/file.json" > "$tmpdir/stack-file.yml"
-          if [ ! -s "$tmpdir/stack-file.yml" ]; then
-            echo "Portainer /api/stacks/${stack_id}/file returned no StackFileContent" >&2
-            cat "$tmpdir/file.json" >&2
-            exit 1
-          fi
-
-          # --- PUT the unchanged file back with the same Env and PullImage ---
-          jq -n --rawfile compose "$tmpdir/stack-file.yml" --argjson env "$env_json" \
-            '{StackFileContent: $compose, Env: $env, PullImage: true}' \
-            > "$tmpdir/body.json"
-
-          request PUT "${PORTAINER_URL}/api/stacks/${stack_id}?endpointId=${endpoint_id}" \
-            "$tmpdir/put.json" \
-            -H "X-API-Key: ${PORTAINER_API_KEY}" \
-            -H "Content-Type: application/json" \
-            --data-binary "@$tmpdir/body.json"
-
-          echo "Portainer stack '${STACK_NAME}' redeployed (PUT accepted)"
+          echo "Portainer redeploy completed"
 
   # The vortex host runs its own Portainer with separate credentials.
   deploy-vortex:
