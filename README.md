@@ -22,7 +22,7 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 | Path | Auth | Description |
 | --- | --- | --- |
 | `GET /` | public | Service identity (`service`, `version`, `description`) as JSON |
-| `GET /healthz` | public | Liveness probe |
+| `GET /healthz` | public | Liveness probe; returns `503` when the configured Docker host is unreachable |
 | `GET /readyz` | public | Readiness probe (also checks the identity provider) |
 | `GET /docs` | public | Swagger UI |
 | `GET /docs/openapi.yaml` | public | OpenAPI 3.1 specification |
@@ -664,7 +664,7 @@ interactive login.
 - **Stateless**: no database, no local session store, no bundled UI. Scale horizontally behind a load balancer with the same `SESSION_SECRET`.
 - **Independent deployments**: each instance has its own OAuth client and allowlist, so one API can serve several sites with different access rules.
 - **CORS is explicit**: no wildcard by default. Add each consuming origin to `CORS_ALLOWED_ORIGINS`.
-- **Probes**: `/healthz` for liveness, `/readyz` for readiness (returns `503` when the identity provider cannot be reached).
+- **Probes**: `/healthz` for liveness (it also probes the configured Docker host and returns `503` with a reason such as `docker: unreachable` when that fails), `/readyz` for readiness (returns `503` when the identity provider cannot be reached).
 - **TLS**: terminate TLS at your reverse proxy/ingress and keep `SESSION_COOKIE_SECURE=true`.
 - **Docs travel with the binary**: the OpenAPI spec is embedded, so no files or volumes are needed at runtime.
 
