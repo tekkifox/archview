@@ -659,6 +659,69 @@ through `/api/architecture` and forwards the response. Open
 `https://archview.example.com/auth/login` directly in a browser to use the
 interactive login.
 
+## Image publishing and stack redeploy
+
+[`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)
+builds and publishes the multi-arch image on a push to `main`. Once the
+manifest is published, its `deploy` job redeploys every ArchView stack through
+the Portainer API; there are no webhooks to configure.
+
+The groups and their stacks come from the `PORTAINER_DEPLOY_MAP` repository
+variable, a JSON object keyed by group name:
+
+```json
+{
+  "storage": ["archview", "storage-archview", "photos-archview"],
+  "media": ["paseo-archview", "archview-mgmt", "archview"],
+  "vortex": ["archview"]
+}
+```
+
+Each group resolves its credentials by name: `storage` reads
+`PORTAINER_STORAGE_URL` and `PORTAINER_STORAGE_API_KEY`, `media` reads
+`PORTAINER_MEDIA_*`, and `vortex` reads `PORTAINER_VORTEX_*`. The group name is
+uppercased and any non-alphanumeric character becomes `_`, so a group named
+`my-host` would read `PORTAINER_MY_HOST_URL` and
+`PORTAINER_MY_HOST_API_KEY`. All three current pairs are repository secrets:
+
+| Group | URL secret | API key secret | Stacks |
+| --- | --- | --- | --- |
+| storage | `PORTAINER_STORAGE_URL` | `PORTAINER_STORAGE_API_KEY` | `archview` (the rossmoney deployment), `storage-archview`, `photos-archview` |
+| media | `PORTAINER_MEDIA_URL` | `PORTAINER_MEDIA_API_KEY` | `paseo-archview`, `archview-mgmt`, `archview` |
+| vortex | `PORTAINER_VORTEX_URL` | `PORTAINER_VORTEX_API_KEY` | `archview` |
+
+The stack called `archview` on the storage Portainer is the **rossmoney**
+deployment; its name does not say so. The `archview` stack on the media
+Portainer is optional and skipped until it exists. The vortex host runs its own
+Portainer with separate credentials and its own `archview` stack.
+
+To add another Portainer later, add its two secrets
+(`PORTAINER_<NAME>_URL` and `PORTAINER_<NAME>_API_KEY`) and one entry in
+`PORTAINER_DEPLOY_MAP`; no workflow change is needed. A group whose variables
+are missing prints `skipped (no credentials for <group>)` and the rest of the
+deploy continues.
+
+For each stack the step:
+
+1. lists the stacks (`GET /api/stacks`) and matches by `Name`, because a
+   stack's `Id` and `EndpointId` change when a Portainer environment is
+   re-created;
+2. reads that stack's `Env` array (`GET /api/stacks/{id}?endpointId={ep}`);
+3. reads the current compose file (`GET /api/stacks/{id}/file?endpointId={ep}`);
+4. sends the file back unchanged with `pullImage: true` and `prune: false`
+   (`PUT /api/stacks/{id}?endpointId={ep}`), which makes Portainer pull
+   `:latest` and recreate the containers.
+
+The step prints one line per stack (`redeployed`, or `skipped (not found)`) and
+fails the job only on an HTTP error or an API key refusal. A stack that is
+missing or renamed is therefore visible in the log without blocking the other
+stacks. The API key travels only in the `X-API-Key` header, never in a URL or a
+log line.
+
+The media Portainer uses a self-signed certificate, so the step calls
+`curl -sS -k`; that flag applies to every request the step makes. The storage
+Portainer has a valid certificate.
+
 ## Microservice notes
 
 - **Stateless**: no database, no local session store, no bundled UI. Scale horizontally behind a load balancer with the same `SESSION_SECRET`.
