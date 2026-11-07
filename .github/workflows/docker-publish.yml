@@ -215,10 +215,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Join the tailnet
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
-          args: --hostname=gh-archview-${{ github.run_id }}
+          hostname: gh-archview-${{ github.run_id }}
 
       - name: Redeploy stacks through the Portainer API
         shell: bash
