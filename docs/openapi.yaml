@@ -196,6 +196,100 @@ paths:
                 $ref: '#/components/schemas/SystemSnapshot'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/updates:
+    get:
+      summary: Automatic container update status
+      description: >-
+        Returns whether the opt-in updater is enabled, its schedule and next
+        run, the current label-scoped selection, and the most recent runs kept
+        in memory. This is a read-only endpoint.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Update configuration and run history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/updates/run:
+    post:
+      summary: Run the container updater now
+      description: |
+        Runs one update pass immediately. The configured dry-run setting is
+        honoured unless the body is `{"force": true}`.
+
+        A manual run stops and recreates containers, so the caller must be an
+        endpoint administrator under the same rules as the image-prune route:
+        a human in `ENDPOINTS_ADMIN_EMAILS`, or a client-credentials caller in
+        `ENDPOINTS_ADMIN_CLIENTS` whose token carries
+        `ENDPOINTS_ADMIN_SCOPE` (default `endpoints:admin`).
+
+        Individual container failures are returned in the run with a
+        `failed: <reason>` result and do not stop the other containers. A
+        failure to list containers is a run-level error and returns `502`.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+                  default: false
+                  description: Ignore ARCHVIEW_UPDATE_DRY_RUN for this run.
+      responses:
+        '200':
+          description: Completed run, including per-container outcomes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateRun'
+        '400':
+          description: Invalid JSON body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Caller is authenticated but not an update administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The run could not list containers from Docker
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateRun'
+  /updates:
+    get:
+      summary: Read-only update dashboard
+      description: >-
+        A small HTML page showing the updater's configuration and the outcome
+        per container for the most recent run. It loads no JavaScript.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: HTML status page
+          content:
+            text/html:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /api/endpoints/{key}/prune-images:
     post:
       summary: Prune Docker images on a managed endpoint
@@ -660,6 +754,84 @@ components:
           type: integer
         sentBytes:
           type: integer
+    UpdatesResponse:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        dryRun:
+          type: boolean
+        schedule:
+          type: string
+          description: Daily `HH:MM` time in the container's time zone.
+        label:
+          type: string
+          description: Label key or key=value that opts a container in.
+        nextRun:
+          type: string
+          format: date-time
+          description: Next scheduled run; null when the feature is disabled.
+        running:
+          type: boolean
+        selection:
+          $ref: '#/components/schemas/UpdateSelection'
+        selectionError:
+          type: string
+          description: Set when the live selection could not be read from Docker.
+        runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpdateRun'
+    UpdateSelection:
+      type: object
+      properties:
+        optedIn:
+          type: array
+          items:
+            type: string
+        excluded:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              reason:
+                type: string
+                enum: [archview, socket proxy, watchtower, configured exclusion]
+    UpdateRun:
+      type: object
+      properties:
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        trigger:
+          type: string
+          enum: [schedule, manual]
+        dryRun:
+          type: boolean
+        error:
+          type: string
+          description: Run-level failure, for example when Docker could not be listed.
+        containers:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpdateContainerResult'
+    UpdateContainerResult:
+      type: object
+      properties:
+        name:
+          type: string
+        oldDigest:
+          type: string
+        newDigest:
+          type: string
+        result:
+          type: string
+          description: "One of `up-to-date`, `updated`, `would-update` or `failed: <reason>`."
     PruneImagesResponse:
       type: object
       properties:

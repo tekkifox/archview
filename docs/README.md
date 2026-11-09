@@ -24,6 +24,10 @@ token (client credentials grant or an OIDC bearer JWT):
 - `GET /api/architecture` — full host overview; optional `?project=` scopes it
 - `GET /api/docker`
 - `GET /api/system`
+- `GET /api/updates` — auto-update configuration, selection and recent runs
+- `POST /api/updates/run` — run the updater now (`{"force":true}` ignores
+  dry-run). Requires the same administrator as the prune route.
+- `GET /updates` — read-only HTML page showing the last update run
 - `POST /api/endpoints/{key}/prune-images` — prune dangling images on a managed
   endpoint; `?all=true` prunes all unused images. Requires an administrator: an
   email in `ENDPOINTS_ADMIN_EMAILS`, or a client-credentials caller that is
