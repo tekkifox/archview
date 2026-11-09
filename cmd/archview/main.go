@@ -11,6 +11,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// Embed the IANA time-zone database so TZ (and therefore
+	// ARCHVIEW_UPDATE_SCHEDULE) works in the minimal runtime image, which does
+	// not install tzdata.
+	_ "time/tzdata"
 
 	"github.com/tekkifox/archview/internal/service"
 )
