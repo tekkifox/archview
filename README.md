@@ -2,11 +2,11 @@
 
 ArchView is a headless Go microservice that collects Docker daemon data, container and image inventory, and Linux host metrics, then exposes them over a JSON API protected by OAuth/OIDC.
 
-It ships **no frontend and no dashboard**. Any number of separate sites, dashboards, or services can consume the API; each deployment is secured independently.
+It ships **no separate frontend**. Any number of separate sites, dashboards, or services can consume the API; each deployment is secured independently. The only built-in HTML pages are the Swagger UI at `/docs` and a small read-only update-status page at `/updates`.
 
 ## Features
 
-- JSON-only API (no bundled UI)
+- JSON API, plus a read-only HTML status page for the optional auto-updater
 - OAuth 2.0 / OpenID Connect login with PKCE, state and nonce validation
 - Non-OIDC OAuth 2.0 providers (for example GitHub) through userinfo
 - Stateless, signed session cookies: no database, safe to run multiple replicas
@@ -34,6 +34,9 @@ It ships **no frontend and no dashboard**. Any number of separate sites, dashboa
 | `GET /api/architecture` | protected | Host overview with telemetry; optional `project` scopes it |
 | `GET /api/docker` | protected | Docker daemon, container and image inventory |
 | `GET /api/system` | protected | Linux host metrics |
+| `GET /api/updates` | protected | Auto-update configuration, current selection and recent runs |
+| `POST /api/updates/run` | protected (admin) | Runs the updater now; `{"force":true}` ignores dry-run |
+| `GET /updates` | protected | Read-only HTML page showing the last update run |
 | `POST /api/endpoints/{key}/prune-images` | protected (admin) | Prunes dangling images on a managed host; `?all=true` prunes all unused images |
 
 Protected endpoints return `401` with a `WWW-Authenticate: Bearer` header when no valid credential is present.
@@ -398,6 +401,91 @@ your identity provider. The token's `scope` must contain the value of
 `ENDPOINTS_ADMIN_SCOPE`.
 
 
+## Automatic container updates
+
+ArchView can pull updated images and recreate opted-in containers on a daily
+schedule. It is the hosted alternative to Watchtower and must **replace**
+Watchtower on a host, not run alongside it: both would recreate the same
+containers at different times. The feature is off by default and is scoped by a
+container label, so enabling the scheduler on a host does nothing until that
+label is added.
+
+```bash
+ARCHVIEW_AUTO_UPDATE=1
+ARCHVIEW_UPDATE_SCHEDULE=04:30          # daily HH:MM in the container's TZ
+ARCHVIEW_UPDATE_LABEL=archview.update=auto
+ARCHVIEW_UPDATE_DRY_RUN=1               # pull and compare, never recreate
+ARCHVIEW_UPDATE_EXCLUDE=panel,identity-provider
+```
+
+A container opts in by carrying the label:
+
+```yaml
+services:
+  app:
+    image: ghcr.io/acme/app:latest
+    labels:
+      - "archview.update=auto"
+```
+
+`ARCHVIEW_UPDATE_EXCLUDE` is a comma-separated list of container names, applied
+**on top of** the built-ins. The updater always skips the ArchView container
+itself (matched by container name or by the running container ID), any
+socket-proxy container, and any Watchtower container.
+
+At the scheduled time it lists running containers, selects only those carrying
+the label, resolves each container's image tag and local image ID, pulls that
+tag, and compares the resulting registry digest/ID with the local one. Only
+images being considered are pulled. A changed digest (or changed image ID when
+a registry omits `RepoDigests`) means the container is recreated: stop, remove,
+create from the inspected configuration, start. Environment, bind mounts,
+named volumes, networks, restart policy, labels and resource limits are copied
+from the inspection, and volumes are never pruned. Images are never deleted.
+
+`ARCHVIEW_UPDATE_DRY_RUN=1` still pulls and compares, but records
+`would-update` instead of recreating. The last 20 runs are kept in memory.
+`GET /api/updates` returns the configuration, the next run time, the current
+selection (opted-in and excluded containers with reasons), and the recorded
+runs. `POST /api/updates/run` runs immediately; it honours dry-run unless the
+JSON body is `{"force":true}`. A manual run requires the same administrator as
+the image-prune route: a human in `ENDPOINTS_ADMIN_EMAILS`, or a
+client-credentials caller in `ENDPOINTS_ADMIN_CLIENTS` whose token carries
+`ENDPOINTS_ADMIN_SCOPE`. `GET /updates` is a small read-only HTML view of the
+last run and each container's outcome.
+
+A failure for one container is logged at error level and recorded as
+`failed: <reason>`; the run continues with the remaining containers. A failed
+pull never stops the rest of the run.
+
+### Docker permissions (privilege increase)
+
+The updater needs Docker **write** access. ArchView itself still talks only to
+the socket proxy; do not mount `/var/run/docker.sock` into the ArchView
+container.
+
+The shipped socket proxy is read-only (`POST=0`), so the feature cannot work
+until the proxy is reconfigured. On a host where the first mate/operator
+decides to enable it, the socket-proxy environment must include:
+
+```yaml
+CONTAINERS: "1"   # list and inspect containers
+IMAGES: "1"       # inspect images
+INFO: "1"
+PING: "1"
+VERSION: "1"
+POST: "1"         # write access: create/start/stop/delete containers and pull
+```
+
+With linuxserver/socket-proxy, `POST=1` is what permits every non-`GET`/`HEAD`
+call, including `POST /images/create`, `POST /containers/create`,
+`POST /containers/{id}/start`, `POST /containers/{id}/stop` and
+`DELETE /containers/{id}`. It cannot be expressed as a narrower flag: enabling
+it is a **privilege increase** that lets anything on that proxy network create,
+stop or delete containers. Do this only on hosts where the feature is being
+turned on, and turn Watchtower off there so the two do not race. Changing a
+host, a socket proxy or Watchtower is an operator decision outside this
+feature's defaults.
+
 ## Troubleshooting login
 
 `login state is missing or expired` means the callback arrived without the
@@ -441,6 +529,11 @@ For Google specifically:
 | `CORS_ALLOWED_ORIGINS` | — | Comma-separated exact origins; empty means same-origin only |
 | `TRUST_PROXY_HEADERS` | `false` | Honour `X-Forwarded-Proto`/`X-Forwarded-Host` |
 | `FULL_DOCKER_PROJECTS` | — | `1`, `true` or `all` returns the full host and Docker overview for every request; otherwise a comma-separated list of normalised project labels that receive it, matched case-sensitively after trimming |
+| `ARCHVIEW_AUTO_UPDATE` | `0` | `1` starts the daily label-scoped container updater; `0` leaves the scheduler disabled |
+| `ARCHVIEW_UPDATE_SCHEDULE` | `04:30` | Daily run time as `HH:MM` in the container's `TZ` |
+| `ARCHVIEW_UPDATE_LABEL` | `archview.update=auto` | Container label (key or key=value) that opts a container in |
+| `ARCHVIEW_UPDATE_DRY_RUN` | `0` | `1` pulls and compares but never recreates; manual runs can override with `{"force":true}` |
+| `ARCHVIEW_UPDATE_EXCLUDE` | — | Comma-separated container names to skip in addition to the built-in ArchView, socket-proxy and Watchtower exclusions |
 | `ENDPOINTS` | — | Managed hosts as comma-separated `key=Portainer-endpoint-id` pairs, or a JSON array/object. Empty disables endpoint management |
 | `PORTAINER_URL` | — | Portainer hub base URL; required when `ENDPOINTS` is non-empty |
 | `PORTAINER_API_KEY` | — | Portainer API key used for endpoint-management calls; required when `ENDPOINTS` is non-empty |
@@ -724,7 +817,7 @@ Portainer has a valid certificate.
 
 ## Microservice notes
 
-- **Stateless**: no database, no local session store, no bundled UI. Scale horizontally behind a load balancer with the same `SESSION_SECRET`.
+- **Stateless**: no database, no local session store, no separate frontend. The auto-updater's run history is in memory only; restarting the process clears it. Scale horizontally behind a load balancer with the same `SESSION_SECRET`, but run the auto-updater on only one replica per host.
 - **Independent deployments**: each instance has its own OAuth client and allowlist, so one API can serve several sites with different access rules.
 - **CORS is explicit**: no wildcard by default. Add each consuming origin to `CORS_ALLOWED_ORIGINS`.
 - **Probes**: `/healthz` for liveness (it also probes the configured Docker host and returns `503` with a reason such as `docker: unreachable` when that fails), `/readyz` for readiness (returns `503` when the identity provider cannot be reached).
@@ -748,11 +841,11 @@ make test
 go test -race ./...
 ```
 
-The test suite covers the PKCE/state/nonce login flow, JWT and JWKS validation, client-credentials and introspection auth, allowlists, CORS, security headers and the absence of the old dashboard.
+The test suite covers the PKCE/state/nonce login flow, JWT and JWKS validation, client-credentials and introspection auth, allowlists, CORS, security headers, the absence of the old dashboard, and the auto-updater's selection, change decision, dry-run and failure-isolation paths against a fake Docker API.
 
 ## Security notes
 
-- Never mount the Docker socket directly into ArchView; use a socket proxy with `POST=0`.
+- Never mount the Docker socket directly into ArchView; use a socket proxy. Keep `POST=0` unless the auto-updater is deliberately enabled for that host, in which case read [Docker permissions](#docker-permissions-privilege-increase): `POST=1` is a privilege increase.
 - Keep `AUTH_MODE=none` out of production. The service logs a warning when authentication is disabled.
 - Prefer allowlists (`OAUTH_ALLOWED_EMAILS` / `OAUTH_ALLOWED_DOMAINS`) for private APIs.
 - Provider endpoints must use HTTPS unless they are loopback addresses; `OAUTH_ALLOW_INSECURE_HTTP` exists for local development.

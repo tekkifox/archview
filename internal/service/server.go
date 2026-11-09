@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tekkifox/archview/docs"
@@ -63,14 +64,24 @@ type Config struct {
 	EndpointAdminEmails  []string
 	EndpointAdminClients []string
 	EndpointAdminScope   string
+
+	// AutoUpdate configures the opt-in, label-scoped container updater. Its
+	// zero value is disabled and runs nothing.
+	AutoUpdate AutoUpdateConfig
 }
 
 type Server struct {
 	cfg             Config
 	client          *http.Client
+	updateClient    *http.Client
 	portainerClient *http.Client
 	dockerBase      string
 	auth            *AuthManager
+
+	updateRunMu   sync.Mutex
+	updateStateMu sync.RWMutex
+	updateRuns    []UpdateRun
+	updateRunning bool
 }
 
 type OverviewResponse struct {
@@ -268,6 +279,7 @@ type dockerContainer struct {
 	ID      string            `json:"Id"`
 	Names   []string          `json:"Names"`
 	Image   string            `json:"Image"`
+	ImageID string            `json:"ImageID"`
 	Created int64             `json:"Created"`
 	State   string            `json:"State"`
 	Status  string            `json:"Status"`
@@ -306,6 +318,11 @@ func NewServer(cfg Config) (*Server, error) {
 	if err := validateEndpointRegistry(cfg.Endpoints); err != nil {
 		return nil, err
 	}
+	autoUpdate, err := normalizeAutoUpdateConfig(cfg.AutoUpdate)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AutoUpdate = autoUpdate
 	if strings.TrimSpace(cfg.EndpointAdminScope) == "" {
 		cfg.EndpointAdminScope = defaultEndpointAdminScope
 	}
@@ -327,6 +344,12 @@ func NewServer(cfg Config) (*Server, error) {
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   10 * time.Second,
+		},
+		// Pulls and container recreation legitimately take longer than a
+		// telemetry read, so the updater gets its own longer timeout.
+		updateClient: &http.Client{
+			Transport: transport,
+			Timeout:   10 * time.Minute,
 		},
 		portainerClient: newPortainerClient(cfg.PortainerInsecureSkipVerify),
 		auth:            auth,
@@ -371,6 +394,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/architecture", s.handleArchitecture)
 	mux.HandleFunc("/api/docker", s.handleDocker)
 	mux.HandleFunc("/api/system", s.handleSystem)
+	mux.HandleFunc("/api/updates", s.handleUpdates)
+	mux.HandleFunc("/api/updates/run", s.handleUpdatesRun)
+	mux.HandleFunc("/updates", s.handleUpdatesDashboard)
 	mux.HandleFunc("/api/endpoints/", s.handleEndpointRoute)
 
 	var handler http.Handler = mux
@@ -1301,6 +1327,58 @@ func (s *Server) requestDocker(ctx context.Context, path string, out any) error 
 		return fmt.Errorf("docker api %s returned %s: %s", path, resp.Status, strings.TrimSpace(string(body)))
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// newDockerRequest builds a request against the configured Docker endpoint with
+// the configured API version prefix. Callers choose their own client so a long
+// image pull is not bound by the short telemetry timeout.
+func (s *Server) newDockerRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, method,
+		fmt.Sprintf("%s/%s%s", strings.TrimRight(s.dockerBase, "/"), s.cfg.DockerAPI, path), body)
+}
+
+// dockerHTTPClient returns the client used for updater calls. A server built by
+// NewServer always has updateClient; the fallbacks keep hand-built test servers
+// and future call sites from panicking on a nil client.
+func (s *Server) dockerHTTPClient() *http.Client {
+	if s.updateClient != nil {
+		return s.updateClient
+	}
+	if s.client != nil {
+		return s.client
+	}
+	return http.DefaultClient
+}
+
+// dockerRequest performs a Docker API call with the updater's longer timeout.
+// It returns the HTTP status even when the call fails so callers can tolerate
+// specific statuses such as 304 (already stopped) or 404 (already removed).
+func (s *Server) dockerRequest(ctx context.Context, method, path string, body io.Reader, out any) (int, error) {
+	req, err := s.newDockerRequest(ctx, method, path, body)
+	if err != nil {
+		return 0, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := s.dockerHTTPClient().Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return resp.StatusCode, fmt.Errorf("docker api %s %s returned %s: %s",
+			method, path, resp.Status, strings.TrimSpace(string(detail)))
+	}
+	if out != nil {
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			return resp.StatusCode, fmt.Errorf("decode docker api %s: %w", path, err)
+		}
+		return resp.StatusCode, nil
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, nil
 }
 
 func shortID(id string) string {

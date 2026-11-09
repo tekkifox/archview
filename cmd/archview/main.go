@@ -11,6 +11,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// Embed the IANA time-zone database so TZ (and therefore
+	// ARCHVIEW_UPDATE_SCHEDULE) works in the minimal runtime image, which does
+	// not install tzdata.
+	_ "time/tzdata"
 
 	"github.com/tekkifox/archview/internal/service"
 )
@@ -38,6 +42,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The scheduler returns immediately when ARCHVIEW_AUTO_UPDATE is off, so
+	// the default deployment never runs an update pass.
+	go server.RunAutoUpdateScheduler(ctx)
+
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("archview listening on %s", httpServer.Addr)
@@ -50,6 +58,12 @@ func main() {
 		log.Printf("host proc: %s", cfg.HostProc)
 		if len(cfg.Endpoints) > 0 {
 			log.Printf("endpoint management: %d endpoint(s) through %s", len(cfg.Endpoints), cfg.PortainerURL)
+		}
+		if cfg.AutoUpdate.Enabled {
+			log.Printf("auto update: schedule=%s label=%q dryRun=%v",
+				cfg.AutoUpdate.Schedule, cfg.AutoUpdate.Label, cfg.AutoUpdate.DryRun)
+		} else {
+			log.Printf("auto update: disabled")
 		}
 		serverErr <- httpServer.ListenAndServe()
 	}()
@@ -145,6 +159,14 @@ func loadConfig() (service.Config, error) {
 		EndpointAdminEmails:         envList("ENDPOINTS_ADMIN_EMAILS"),
 		EndpointAdminClients:        envList("ENDPOINTS_ADMIN_CLIENTS"),
 		EndpointAdminScope:          envOrDefault("ENDPOINTS_ADMIN_SCOPE", "endpoints:admin"),
+
+		AutoUpdate: service.AutoUpdateConfig{
+			Enabled:  envBool("ARCHVIEW_AUTO_UPDATE", false),
+			Schedule: envOrDefault("ARCHVIEW_UPDATE_SCHEDULE", "04:30"),
+			Label:    envOrDefault("ARCHVIEW_UPDATE_LABEL", "archview.update=auto"),
+			DryRun:   envBool("ARCHVIEW_UPDATE_DRY_RUN", false),
+			Exclude:  envList("ARCHVIEW_UPDATE_EXCLUDE"),
+		},
 	}, nil
 }
 
