@@ -201,191 +201,68 @@ jobs:
             "ghcr.io/${GITHUB_REPOSITORY}@${amd64_digest}" \
             "ghcr.io/${GITHUB_REPOSITORY}@${arm64_digest}"
 
-  # Redeploy every ArchView stack after the image is published. The groups and
-  # their stacks come from the PORTAINER_DEPLOY_MAP repository variable, so a
-  # new host only needs its PORTAINER_<NAME>_URL/API_KEY secrets and a map
-  # entry. Stacks are matched by name because their Id and EndpointId change
-  # when Portainer environments are re-created. A stack that does not exist is
-  # reported and skipped so a renamed stack is visible without blocking the
-  # other hosts.
+  # Redeploy every ArchView stack after the image is published. The fleet's
+  # stacks are files on disk managed by Ansible, so this job asks the fleet's
+  # deploy seat on mgmt, over SSH, to pull and recreate exactly the named
+  # stacks on exactly the named host. The seat validates the host and the
+  # stacks itself and refuses a stack the host does not declare, so a wrong
+  # mapping fails loudly instead of silently doing nothing.
+  #
+  # This job is self-contained instead of calling the reusable
+  # deploy-stack.yml in tekkifox/infrastructure-as-code because that
+  # repository is private: a public repository cannot call a reusable
+  # workflow stored in a private one, and GitHub rejects it at workflow load,
+  # before any job runs. That leaves these steps duplicated here as the price
+  # of this repository being public. Keep them in step with the reusable
+  # workflow.
+  #
+  # DEPLOY_SSH_KEY is the deploy-only key and must be a repository secret;
+  # TS_AUTHKEY is already present. The deploy seat's tailnet address is a
+  # secret too (DEPLOY_SEAT_HOST), so no real hostname is published here.
+  #
+  # vortex is deliberately absent: vortexservers is not in the Ansible
+  # inventory yet, so the deploy seat cannot reach it. It returns when vortex
+  # is onboarded.
   deploy:
-    name: Redeploy ArchView stacks via Portainer API
-    runs-on: ubuntu-latest
+    name: Deploy ${{ matrix.stacks }} on ${{ matrix.host }}
     needs: [merge]
     if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: mgmt
+            stacks: mgmt-archview
+          - host: media
+            stacks: media-archview
+          - host: storage
+            stacks: storage-archview
+          - host: rossmoney
+            stacks: rossmoney-archview
+          - host: photos
+            stacks: photos-archview
+          - host: paseo
+            stacks: paseo-archview
+    runs-on: ubuntu-latest
     steps:
       - name: Join the tailnet
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
-          hostname: gh-archview-${{ github.run_id }}
+          hostname: gh-archview-${{ github.run_id }}-${{ matrix.host }}
 
-      - name: Redeploy stacks through the Portainer API
-        shell: bash
+      - name: Ask the fleet deploy seat to deploy
         env:
-          PORTAINER_DEPLOY_MAP: ${{ vars.PORTAINER_DEPLOY_MAP }}
-          PORTAINER_STORAGE_URL: ${{ secrets.PORTAINER_STORAGE_URL }}
-          PORTAINER_STORAGE_API_KEY: ${{ secrets.PORTAINER_STORAGE_API_KEY }}
-          PORTAINER_MEDIA_URL: ${{ secrets.PORTAINER_MEDIA_URL }}
-          PORTAINER_MEDIA_API_KEY: ${{ secrets.PORTAINER_MEDIA_API_KEY }}
-          PORTAINER_VORTEX_URL: ${{ secrets.PORTAINER_VORTEX_URL }}
-          PORTAINER_VORTEX_API_KEY: ${{ secrets.PORTAINER_VORTEX_API_KEY }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SEAT_HOST: ${{ secrets.DEPLOY_SEAT_HOST }}
+          TARGET_HOST: ${{ matrix.host }}
+          TARGET_STACKS: ${{ matrix.stacks }}
         run: |
           set -euo pipefail
-
-          if [ -z "${PORTAINER_DEPLOY_MAP:-}" ]; then
-            echo "PORTAINER_DEPLOY_MAP repository variable is not set" >&2
-            exit 1
-          fi
-          if ! jq -e 'type == "object" and all(.[]; type == "array")' \
-            >/dev/null 2>&1 <<<"$PORTAINER_DEPLOY_MAP"; then
-            echo "PORTAINER_DEPLOY_MAP is not a JSON object of stack-name arrays" >&2
-            exit 1
-          fi
-
-          tmpdir="${RUNNER_TEMP:-/tmp}/portainer-redeploy"
-          rm -rf "$tmpdir"
-          mkdir -p "$tmpdir"
-          trap 'rm -rf "$tmpdir"' EXIT
-
-          # Issue one API request. The key travels only in the X-API-Key header,
-          # never in a URL or a log line. Any status other than 200 fails, and
-          # the response body is printed for diagnosis.
-          request() {
-            local method="$1"
-            local url="$2"
-            local out="$3"
-            shift 3
-            local status
-            if ! status=$(curl -sS -k -o "$out" -w '%{http_code}' -X "$method" "$@" "$url"); then
-              echo "Portainer ${method} ${url} failed before a response" >&2
-              return 1
-            fi
-            if [ "$status" != "200" ]; then
-              echo "Portainer ${method} ${url} failed with HTTP status ${status}" >&2
-              cat "$out" >&2 || true
-              echo >&2
-              return 1
-            fi
-          }
-
-          # Redeploy every named stack on one Portainer. Prints one line per
-          # stack. A stack that is absent is skipped; a request error marks the
-          # group failed and the remaining stacks are still attempted.
-          redeploy_group() {
-            local label="$1"
-            local url="$2"
-            local key="$3"
-            local stack_names="$4"
-            local list_file="${tmpdir}/${label}-stacks.json"
-            local failed=0
-            local stack name_count stack_id endpoint_id
-            local detail_file file_file stack_file body_file
-
-            url="${url%/}"
-            if ! request GET "${url}/api/stacks" "$list_file" -H "X-API-Key: ${key}"; then
-              echo "${label}: could not list stacks" >&2
-              return 1
-            fi
-
-            for stack in $stack_names; do
-              name_count=$(jq --arg name "$stack" \
-                '[.[] | select(.Name == $name)] | length' "$list_file")
-              if [ "$name_count" -eq 0 ]; then
-                echo "${label}/${stack}: skipped (not found)"
-                continue
-              fi
-              if [ "$name_count" -gt 1 ]; then
-                echo "${label}/${stack}: error: more than one stack has that name" >&2
-                failed=1
-                continue
-              fi
-
-              stack_id=$(jq -r --arg name "$stack" \
-                '.[] | select(.Name == $name) | .Id' "$list_file")
-              endpoint_id=$(jq -r --arg name "$stack" \
-                '.[] | select(.Name == $name) | .EndpointId' "$list_file")
-              if [ -z "$stack_id" ] || [ "$stack_id" = "null" ] ||
-                [ -z "$endpoint_id" ] || [ "$endpoint_id" = "null" ]; then
-                echo "${label}/${stack}: error: missing Id or EndpointId" >&2
-                failed=1
-                continue
-              fi
-
-              detail_file="${tmpdir}/${label}-${stack}-detail.json"
-              file_file="${tmpdir}/${label}-${stack}-file.json"
-              stack_file="${tmpdir}/${label}-${stack}-stack.yml"
-              body_file="${tmpdir}/${label}-${stack}-body.json"
-
-              # Read the detail for its Env array, and the current stack file
-              # so the redeploy changes nothing but the pulled image.
-              if ! request GET "${url}/api/stacks/${stack_id}?endpointId=${endpoint_id}" \
-                "$detail_file" -H "X-API-Key: ${key}"; then
-                echo "${label}/${stack}: error: could not read stack detail" >&2
-                failed=1
-                continue
-              fi
-              if ! request GET "${url}/api/stacks/${stack_id}/file?endpointId=${endpoint_id}" \
-                "$file_file" -H "X-API-Key: ${key}"; then
-                echo "${label}/${stack}: error: could not read stack file" >&2
-                failed=1
-                continue
-              fi
-
-              jq -j '.StackFileContent // empty' "$file_file" > "$stack_file"
-              if [ ! -s "$stack_file" ]; then
-                echo "${label}/${stack}: error: no StackFileContent returned" >&2
-                failed=1
-                continue
-              fi
-
-              jq -n --rawfile content "$stack_file" \
-                --argjson env "$(jq -c '.Env // []' "$detail_file")" \
-                '{stackFileContent: $content, env: $env, prune: false, pullImage: true}' \
-                > "$body_file"
-
-              if ! request PUT "${url}/api/stacks/${stack_id}?endpointId=${endpoint_id}" \
-                "${tmpdir}/${label}-${stack}-put.json" \
-                -H "X-API-Key: ${key}" \
-                -H "Content-Type: application/json" \
-                --data-binary "@${body_file}"; then
-                echo "${label}/${stack}: error: redeploy failed" >&2
-                failed=1
-                continue
-              fi
-
-              echo "${label}/${stack}: redeployed"
-            done
-
-            return "$failed"
-          }
-
-          failed_groups=0
-          while IFS= read -r group; do
-            [ -n "$group" ] || continue
-
-            # storage -> PORTAINER_STORAGE_URL / PORTAINER_STORAGE_API_KEY.
-            # Non-alphanumerics become underscores so my-host still resolves.
-            suffix=$(printf '%s' "$group" | tr '[:lower:]' '[:upper:]' |
-              sed 's/[^A-Z0-9]/_/g')
-            url_var="PORTAINER_${suffix}_URL"
-            key_var="PORTAINER_${suffix}_API_KEY"
-            url="${!url_var:-}"
-            key="${!key_var:-}"
-            if [ -z "$url" ] || [ -z "$key" ]; then
-              echo "${group}: skipped (no credentials for ${group})"
-              continue
-            fi
-
-            stack_names=$(jq -r --arg group "$group" \
-              '.[$group] | .[]' <<<"$PORTAINER_DEPLOY_MAP")
-            if ! redeploy_group "$group" "$url" "$key" "$stack_names"; then
-              failed_groups=$((failed_groups + 1))
-            fi
-          done < <(jq -r 'keys_unsorted[]' <<<"$PORTAINER_DEPLOY_MAP")
-
-          if [ "$failed_groups" -gt 0 ]; then
-            echo "Portainer redeploy failed for ${failed_groups} group(s)" >&2
-            exit 1
-          fi
-          echo "Portainer redeploy completed"
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy"
+          chmod 0600 "$HOME/.ssh/deploy"
+          ssh -i "$HOME/.ssh/deploy" -p 32 \
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+            root@"$DEPLOY_SEAT_HOST" \
+            "fleet-deploy $TARGET_HOST $TARGET_STACKS deploy"
