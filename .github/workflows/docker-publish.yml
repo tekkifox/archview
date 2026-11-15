@@ -91,6 +91,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # The whole point of this job is a native build. If the runner label is
+      # ever pointed at an x86 machine the arm64 image would need emulation, so
+      # fail here instead of quietly publishing something slower and stranger.
+      - name: Assert the runner is arm64
+        run: test "$(uname -m)" = "aarch64"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -200,6 +206,44 @@ jobs:
           docker buildx imagetools create "${args[@]}" \
             "ghcr.io/${GITHUB_REPOSITORY}@${amd64_digest}" \
             "ghcr.io/${GITHUB_REPOSITORY}@${arm64_digest}"
+
+      # A merge that silently drops a platform still pushes cleanly, and the
+      # fleet would only notice on an ARM host at pull time. Read the index
+      # back from the registry and fail the job unless both builds are in it,
+      # so `deploy` cannot run on a half-published image.
+      - name: Verify the published manifest lists both architectures
+        shell: bash
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          tag="$(head -n1 <<< "$TAGS")"
+          manifest="${RUNNER_TEMP}/manifest.json"
+          docker buildx imagetools inspect "$tag" --raw > "$manifest"
+
+          media_type="$(jq -r '.mediaType // empty' "$manifest")"
+          platforms="$(jq -r '.manifests[]?.platform
+            | select(. != null)
+            | "\(.os)/\(.architecture)"' "$manifest" | sort -u)"
+          echo "mediaType: ${media_type}"
+          echo "platforms:"
+          echo "${platforms}"
+
+          case "$media_type" in
+            application/vnd.oci.image.index.v1+json | \
+              application/vnd.docker.distribution.manifest.list.v2+json) ;;
+            *)
+              echo "Published ${tag} is not a manifest list" >&2
+              exit 1
+              ;;
+          esac
+
+          for want in linux/amd64 linux/arm64; do
+            if ! grep -qx "$want" <<< "$platforms"; then
+              echo "Published ${tag} is missing ${want}" >&2
+              exit 1
+            fi
+          done
 
   # Redeploy every ArchView stack after the image is published. The fleet's
   # stacks are files on disk managed by Ansible, so this job asks the fleet's
