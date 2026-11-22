@@ -257,28 +257,24 @@ jobs:
           done
 
   # Redeploy every ArchView stack after the image is published. The fleet's
-  # stacks are files on disk managed by Ansible, so this job asks the fleet's
-  # deploy seat on mgmt, over SSH, to pull and recreate exactly the named
-  # stacks on exactly the named host. The seat validates the host and the
-  # stacks itself and refuses a stack the host does not declare, so a wrong
-  # mapping fails loudly instead of silently doing nothing.
+  # stacks are Ansible-managed files on disk, so the fleet deploy job asks the
+  # mgmt deploy seat over SSH to pull and recreate the named stack on the named
+  # host. The seat validates the host and stacks itself and refuses a stack the
+  # host does not declare, so a wrong mapping fails loudly instead of silently
+  # doing nothing.
   #
-  # This job is self-contained instead of calling the reusable
-  # deploy-stack.yml in tekkifox/infrastructure-as-code because that
-  # repository is private: a public repository cannot call a reusable
-  # workflow stored in a private one, and GitHub rejects it at workflow load,
-  # before any job runs. That leaves these steps duplicated here as the price
-  # of this repository being public. Keep them in step with the reusable
-  # workflow.
+  # Vortex is not in the Ansible fleet inventory, so it deploys separately via
+  # the vortex-deploy wrapper on a vortex self-hosted runner.
   #
-  # DEPLOY_SSH_KEY is the deploy-only key and must be a repository secret;
-  # TS_AUTHKEY is already present. The deploy seat's tailnet address is a
-  # secret too (DEPLOY_SEAT_HOST), so no real hostname is published here.
+  # These jobs are self-contained instead of calling reusable deploy workflows
+  # in private infrastructure repositories, because a public repository cannot
+  # call a reusable workflow stored in a private one and GitHub rejects it at
+  # workflow load. Keep the transport in step with those reusable workflows.
   #
-  # vortex is deliberately absent: vortexservers is not in the Ansible
-  # inventory yet, so the deploy seat cannot reach it. It returns when vortex
-  # is onboarded.
-  deploy:
+  # The fleet runner has the deploy-only SSH key preinstalled at
+  # $HOME/.ssh/deploy. DEPLOY_SEAT_HOST is a repository secret so no real
+  # hostname is published here.
+  deploy-fleet:
     name: Deploy ${{ matrix.stacks }} on ${{ matrix.host }}
     needs: [merge]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -298,26 +294,33 @@ jobs:
             stacks: photos-archview
           - host: paseo
             stacks: paseo-archview
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - name: Join the tailnet
-        uses: tailscale/github-action@v4
-        with:
-          authkey: ${{ secrets.TS_AUTHKEY }}
-          hostname: gh-archview-${{ github.run_id }}-${{ matrix.host }}
-
       - name: Ask the fleet deploy seat to deploy
         env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_SEAT_HOST: ${{ secrets.DEPLOY_SEAT_HOST }}
           TARGET_HOST: ${{ matrix.host }}
           TARGET_STACKS: ${{ matrix.stacks }}
         run: |
           set -euo pipefail
-          install -d -m 0700 "$HOME/.ssh"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy"
-          chmod 0600 "$HOME/.ssh/deploy"
           ssh -i "$HOME/.ssh/deploy" -p 32 \
             -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
             root@"$DEPLOY_SEAT_HOST" \
             "fleet-deploy $TARGET_HOST $TARGET_STACKS deploy"
+
+  deploy-vortex:
+    name: Deploy vortex-archview on vortex
+    needs: [merge]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on:
+      - self-hosted
+      - linux
+      - X64
+      - vortexservers
+    steps:
+      - name: Deploy via vortex-deploy
+        env:
+          STACKS: vortex-archview
+        run: |
+          set -euo pipefail
+          sudo /usr/local/bin/vortex-deploy "$STACKS" deploy
