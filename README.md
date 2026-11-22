@@ -755,26 +755,30 @@ interactive login.
 ## Image publishing and stack redeploy
 
 [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)
-builds and publishes the multi-arch image on a push to `main`. Once the
-manifest is published, its `deploy` job redeploys the ArchView stack on every
-fleet host; there are no webhooks to configure.
+builds and publishes the multi-arch image on pushes to `main` or `dev`. Once
+the manifest is published, deploy jobs redeploy the ArchView stacks; there are
+no webhooks to configure.
 
-The fleet's stacks are not owned by Portainer: they are files on disk managed
-by Ansible. The `deploy` job therefore runs once per host through a job
-matrix. Each run joins the tailnet, then over SSH asks the fleet's deploy seat
-on mgmt to pull and recreate exactly the named stacks on exactly the named
-host. The seat validates the host and stacks itself and refuses a stack the
-host does not declare, so a wrong mapping fails loudly instead of silently
-doing nothing.
+The fleet's stacks are Ansible-managed files on disk. The fleet deploy job runs
+once per host through a matrix on a self-hosted runner. Each run asks the
+fleet's deploy seat on mgmt, over SSH, to pull and recreate exactly the named
+stack on exactly that host. The seat validates the host and stack itself and
+refuses a stack the host does not declare, so a wrong mapping fails loudly
+instead of silently doing nothing. The runner has the deploy-only SSH key
+preinstalled.
 
-The job is self-contained rather than calling the reusable deploy workflow in
-the fleet's private infrastructure repository, because a public repository
-cannot call a reusable workflow stored in a private one — GitHub rejects it at
-workflow load, before any job runs. The steps are duplicated here as the price
-of this repository being public, so they must be kept in step with the
-reusable workflow.
+Vortex is not in the Ansible fleet inventory, so it deploys separately on a
+vortex self-hosted runner via `sudo /usr/local/bin/vortex-deploy` for the
+`vortex-archview` stack.
 
-Each host runs one stack, named `<host>-archview` in the fleet inventory:
+The jobs are self-contained rather than calling reusable deploy workflows in
+private infrastructure repositories, because a public repository cannot call a
+reusable workflow stored in a private one — GitHub rejects it at workflow load,
+before any job runs. The steps are duplicated here as the price of this
+repository being public, so they must be kept in step with the reusable
+workflows.
+
+Each fleet host runs one stack, named `<host>-archview` in the fleet inventory:
 
 | Host | Stack |
 | --- | --- |
@@ -785,26 +789,20 @@ Each host runs one stack, named `<host>-archview` in the fleet inventory:
 | `photos` | `photos-archview` |
 | `paseo` | `paseo-archview` |
 
-The matrix uses `fail-fast: false`, so one host failing does not cancel the
-others. Three repository secrets are required:
+The fleet matrix uses `fail-fast: false`, so one host failing does not cancel
+the others. One repository secret is required for the fleet deploy:
 
 | Secret | Purpose |
 | --- | --- |
-| `DEPLOY_SSH_KEY` | Private half of the deploy-only key installed on mgmt |
 | `DEPLOY_SEAT_HOST` | Tailnet address of the deploy seat on mgmt |
-| `TS_AUTHKEY` | Tailscale auth key for the runner |
 
-`vortex` is deliberately absent from the matrix: vortexservers is not in the
-Ansible inventory yet, so the deploy seat cannot reach it. It returns to the
-matrix when vortex is onboarded.
+To deploy a fleet stack on a new host, add a `host`/`stacks` pair to the fleet
+matrix. The host must be one of the inventory hosts the deploy seat accepts.
 
-To deploy a stack on a new host, add a `host`/`stacks` pair to the matrix. The
-host must be one of the inventory hosts the reusable workflow accepts.
-
-These deploy secrets are unrelated to the `PORTAINER_URL` and
-`PORTAINER_API_KEY` runtime settings described above: those configure
-ArchView's own endpoint-management feature and are set in the container's
-environment, not here.
+This deploy secret is unrelated to the `PORTAINER_URL` and `PORTAINER_API_KEY`
+runtime settings described above: those configure ArchView's own
+endpoint-management feature and are set in the container's environment, not
+here.
 
 ## Microservice notes
 
