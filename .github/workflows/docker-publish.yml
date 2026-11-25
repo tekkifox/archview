@@ -297,6 +297,7 @@ jobs:
           - host: paseo
             stacks: paseo-archview
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Join the tailnet
         uses: tailscale/github-action@v4
@@ -339,6 +340,7 @@ jobs:
       - linux
       - X64
       - vortexservers
+    environment: production
     steps:
       - name: Deploy via vortex-deploy
         env:
